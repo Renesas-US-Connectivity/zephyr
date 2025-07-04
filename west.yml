@@ -138,6 +138,14 @@ manifest:
       path: tools/edtt
       groups:
         - tools
+    - name: erpc
+      revision: 66df18db304906d07331aced0b0f2fc0587f952e
+      url: https://github.com/Renesas-US-Connectivity/erpc.git
+      path: modules/lib/erpc
+    - name: erpc_wifi_service
+      revision: 78fc9b83fb5f5cb8ad509a8a0c08882c87888e69
+      path: zephyr/drivers/wifi/renesas/erpc_wifi/service
+      url: https://github.com/Renesas-US-Connectivity/ra_wifi_erpc_service
     - name: fatfs
       revision: 16245c7c41d2b79e74984f49b5202551786b8a9b
       path: modules/fs/fatfs
