@@ -12,7 +12,8 @@
 		reg = <0x0>;
 		spi-max-frequency = <100000>;
 		boot-duration-ms = <2000>;
+		reset-assert-duration-ms = <200>;
 		reset-gpios = <&mikrobus_header 1 GPIO_ACTIVE_LOW>;
-		int-gpios = <&mikrobus_header 7 GPIO_ACTIVE_LOW>;
+		int-gpios = <&mikrobus_header 7 GPIO_ACTIVE_HIGH>;
 	};
 };

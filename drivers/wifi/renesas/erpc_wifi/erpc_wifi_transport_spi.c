@@ -15,6 +15,8 @@
 
 #include "erpc_wifi_transport.h"
 
+#include "ncp_fw_loader.h"
+
 struct erpc_wifi_spi_config {
 	struct gpio_dt_spec n_int;
 	struct spi_dt_spec bus;
@@ -34,5 +36,8 @@ erpc_transport_t erpc_wifi_transport_init(void)
 		return NULL;
 	};
 
-	return erpc_transport_zephyr_spi_master_init((void *)&cfg->bus, (void *)&cfg->n_int);
+	ncp_fw_loader(8, false);
+
+	return NULL;
+	//return erpc_transport_zephyr_spi_master_init((void *)&cfg->bus, (void *)&cfg->n_int);
 }

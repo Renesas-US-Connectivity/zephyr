@@ -9,13 +9,15 @@ if(CONFIG_WIFI_ERPC_WIFI)
 	service/wifi_host_to_ra_client.cpp
 	service/wifi_host_to_ra_interface.cpp
 
-    service/c_wifi_ra_to_host_server.cpp
+  service/c_wifi_ra_to_host_server.cpp
 	service/wifi_ra_to_host_server.cpp
 	service/wifi_ra_to_host_interface.cpp
   )
 
   zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_UART erpc_wifi_transport_uart.c)
   zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_SPI erpc_wifi_transport_spi.c)
+  zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_SPI ncp_fw_loader.c)
+  zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_SPI crc32.c)
 
   zephyr_include_directories(
 	.
