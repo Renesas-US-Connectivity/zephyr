@@ -17,6 +17,8 @@ if(CONFIG_WIFI_ERPC_WIFI)
   zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_UART erpc_wifi_transport_uart.c)
   zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_SPI erpc_wifi_transport_spi.c)
   zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_SPI ncp_fw_loader.c)
+  zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_SPI ncp_fw_loader_spi.c)
+  zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_SPI crc16.c)
   zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_SPI crc32.c)
 
   zephyr_include_directories(
