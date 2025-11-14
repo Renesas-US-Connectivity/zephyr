@@ -33,10 +33,14 @@ int nfl_check_spi_start(const struct gpio_dt_spec *spi_start, int timeout_ms);
 #define ERR_PROT_COMMAND_ERROR          -108    /**< error executing command */
 #define ERR_PROT_UNSUPPORTED_VERSION    -110    /**< unsupported version of bootloader detected */
 
+#define ERR_PROG_QSPI_WRITE             -300    /**< QSPI write error */
+
 #define CMD_ERASE_QSPI             0x04
+#define CMD_DIRECT_WRITE_TO_QSPI   0x12
 
 /* Typical timeout for command execution */
-#define EXECUTION_TIMEOUT       5000
+#define FLASH_ERASE_MASK (0x0FFF)
+#define EXECUTION_TIMEOUT (5000)
 
 /**
  * \brief Start of Header
@@ -71,8 +75,9 @@ struct write_buf {
     size_t len;
 };
 
-int protocol_cmd_erase_qspi(const struct spi_dt_spec *spec, uint32_t address, size_t size);
-
+int prog_erase_qspi(const struct spi_dt_spec *spec, uint32_t address, size_t size);
+int prog_write_to_qspi(const struct spi_dt_spec *spec,
+                       uint32_t flash_address, const uint8_t *buf, uint32_t size);
 /******************** END *********************/
 
 #ifdef __cplusplus

@@ -155,6 +155,7 @@ static int wait_for_ack(const struct spi_dt_spec *spec, size_t timeout_ms)
         }
 
 		k_sleep(K_MSEC(PROT2_TIMEOUT_INTERVAL_MS));
+        LOG_INF("PROT2: Timeout[%d]", i);
         i++;
 	}
 
@@ -184,6 +185,13 @@ static int send_cmd_header(const struct spi_dt_spec *spec, uint8_t type, uint16_
         return -EIO;
     }
 
+    // /* Wait until start high - avoid busy polling */
+	// if (nfl_check_spi_start(&spi_start, EXECUTION_TIMEOUT) != 0) {
+	// 	LOG_ERR("Start time out \n");
+	// 	return -ETIMEDOUT;
+	// }
+    k_sleep(K_MSEC(5));
+
     return wait_for_ack(spec, 300);
 }
 
@@ -200,6 +208,7 @@ static int send_cmd_data(const struct spi_dt_spec *spec,
 
         crc16_update(&crc, b->buf, b->len);
 
+        k_sleep(K_MSEC(5));
         // ret = serial_write(b->buf, b->len);
         ret = nfl_send(spec, b->buf, b->len);
         if (ret) {
@@ -207,6 +216,13 @@ static int send_cmd_data(const struct spi_dt_spec *spec,
             goto done;
         }
     }
+
+    // /* Wait until start high - avoid busy polling */
+	// if (nfl_check_spi_start(&spi_start, EXECUTION_TIMEOUT) != 0) {
+	// 	LOG_ERR("Start time out \n");
+	// 	return -ETIMEDOUT;
+	// }
+    k_sleep(K_MSEC(5));
 
     LOG_INF("PROT2: Data sent, waiting for ACK");
     ret = wait_for_ack(spec, EXECUTION_TIMEOUT);
@@ -220,12 +236,13 @@ static int send_cmd_data(const struct spi_dt_spec *spec,
     uint8_t crc_buf[2];
     LOG_INF("PROT2: Reading CRC16 from NCP");
 
-    /* Wait until start high */
-	if (nfl_check_spi_start(&spi_start, 1000) != 0) {
-		LOG_ERR("Start time out \n");
-		return -ETIMEDOUT;
-	}
+    // /* Wait until start high */
+	// if (nfl_check_spi_start(&spi_start, 1000) != 0) {
+	// 	LOG_ERR("Start time out \n");
+	// 	return -ETIMEDOUT;
+	// }
 
+    k_sleep(K_MSEC(5));
     LOG_INF("PROT2: SPI read CRC16");
     ret = nfl_read(spec, crc_buf, sizeof(crc_buf));
     if (ret) {
@@ -258,7 +275,7 @@ done:
     return ret;
 }
 
-int protocol_cmd_erase_qspi(const struct spi_dt_spec *spec, uint32_t address, size_t size)
+static int protocol_cmd_erase_qspi(const struct spi_dt_spec *spec, uint32_t address, size_t size)
 {
     uint8_t header_buf[8];
     struct write_buf wb[1];
@@ -305,4 +322,109 @@ int protocol_cmd_erase_qspi(const struct spi_dt_spec *spec, uint32_t address, si
     LOG_INF("PROT2: QSPI erase command completed with status: %d", err);
 
     return err;
+}
+
+int prog_erase_qspi(const struct spi_dt_spec *spec, uint32_t address, size_t size)
+{
+    return protocol_cmd_erase_qspi(spec, address, size);
+}
+
+/************* write QSPI ***************/
+
+static int protocol_cmd_direct_write_to_qspi(const struct spi_dt_spec *spec,
+    const uint8_t *buf, size_t size, uint32_t addr, bool verify)
+{
+    uint8_t header_buf[5];
+    struct write_buf wb[2];
+    int err;
+
+    LOG_INF("==========================");
+    LOG_INF("Running QSPI write command");
+	LOG_INF("==========================");
+    err = send_cmd_header(spec, CMD_DIRECT_WRITE_TO_QSPI, sizeof(header_buf) + size);
+    if (err) {
+        LOG_ERR("PROT2: send_cmd_data failed with error: %d", err);
+        return err;
+    }
+
+    LOG_INF("PROT2: QSPI write address: 0x%06X, size: 0x%06X, verify: %d", addr, size, verify);
+    header_buf[0] = (uint8_t) (verify);
+    header_buf[1] = (uint8_t) (addr);
+    header_buf[2] = (uint8_t) (addr >> 8);
+    header_buf[3] = (uint8_t) (addr >> 16);
+    header_buf[4] = (uint8_t) (addr >> 24);
+
+    wb[0].buf = header_buf;
+    wb[0].len = sizeof(header_buf);
+    wb[1].buf = buf;
+    wb[1].len = size;
+    err = send_cmd_data(spec, wb, 2);
+    if (err) {
+        LOG_ERR("PROT2: send_cmd_data failed with error: %d", err);
+        return err;
+    }
+
+    /* Wait until start high - avoid busy polling */
+	if (nfl_check_spi_start(&spi_start, EXECUTION_TIMEOUT) != 0) {
+		LOG_ERR("Start time out \n");
+		return -ETIMEDOUT;
+	}
+
+    /* each sector write time could be taken 200ms in max */
+    err = wait_for_ack(spec, 100);
+    LOG_INF("PROT2: QSPI write command completed with status: %d", err);
+
+    return err;
+}
+
+#define TARGET_QSPI_WRITE_CHUNK_SIZE 4096
+
+int prog_write_to_qspi(const struct spi_dt_spec *spec,
+    uint32_t flash_address, const uint8_t *buf, uint32_t size)
+{
+    int err = 0;
+    uint32_t offset = 0;
+    uint8_t retry_cnt = 0;
+
+    while (offset < size) {
+        uint32_t chunk_size = size - offset;
+
+        if (retry_cnt > 10) {
+            err = ERR_PROG_QSPI_WRITE;
+            LOG_ERR("PROG: prog_write_to_qspi failed. Abort. \n");
+            goto done;
+        }
+
+        if (chunk_size > TARGET_QSPI_WRITE_CHUNK_SIZE) {
+            chunk_size = TARGET_QSPI_WRITE_CHUNK_SIZE;
+        }
+        /*
+        * Modify chunk size if write would not start at the beginning of sector.
+        */
+        if (((flash_address + offset) & FLASH_ERASE_MASK) + chunk_size >
+                                                                TARGET_QSPI_WRITE_CHUNK_SIZE) {
+            chunk_size = TARGET_QSPI_WRITE_CHUNK_SIZE
+                - ((flash_address + offset) & FLASH_ERASE_MASK);
+        }
+
+        LOG_INF("Writing to address: 0x%08x offset: 0x%08x chunk size: 0x%08x\n",
+                flash_address, offset, chunk_size);
+
+        err = protocol_cmd_direct_write_to_qspi(spec,
+                                                buf + offset, chunk_size,
+                                                (flash_address + offset),
+                                                true);
+        if (err != 0) {
+            LOG_INF("Verify writing to qspi address 0x%x failed. Retrying ...\n",
+                    flash_address + offset);
+            retry_cnt++;
+            continue;
+        }
+
+        retry_cnt = 0;
+        offset += chunk_size;
+    }
+
+done:
+        return err;
 }

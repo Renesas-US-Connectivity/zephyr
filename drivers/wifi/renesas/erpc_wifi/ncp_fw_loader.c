@@ -18,6 +18,7 @@ LOG_MODULE_REGISTER(ncp_fw_loader, CONFIG_WIFI_LOG_LEVEL);
 
 #include "ncp_fw_loader.h"
 #include "ncp_fw_loader_binaries_v2.h"
+#include "adc_ep_img.h"
 #include "crc32.h"
 
 #define SPI_OP (SPI_WORD_SET(8) | SPI_TRANSFER_MSB) // Example: 8-bit word, MSB first
@@ -280,7 +281,11 @@ static int ncp_fw_loader_stage2(const struct spi_dt_spec *spi_slave_spec,
 	}
 
 	/* Erase QSPI flash at address=0x000000, size=0x800000 */
-	protocol_cmd_erase_qspi(spi_slave_spec, 0x000000, 0x800000);
+	prog_erase_qspi(spi_slave_spec, 0x000000, 0x800000);
+
+	/* Write QSPI flash image */
+	prog_write_to_qspi(spi_slave_spec, 0x000000, _home_renesas_Downloads_adc_img,
+		sizeof(_home_renesas_Downloads_adc_img));
 
    /* We can either wait a fixed amount of time for the RA6Wx device to
 	* finish booting or we can wait for it to send us the reset complete
