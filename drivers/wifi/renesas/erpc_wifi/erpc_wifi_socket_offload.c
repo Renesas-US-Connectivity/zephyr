@@ -778,50 +778,46 @@ static int erpc_wifi_socket_poll_offload(struct zvfs_pollfd *fds, int nfds, int 
     int64_t start_time = k_uptime_get();
     bool forever = (timeout == SYS_FOREVER_MS);
     int fd_found = 0;
+    int found_inval;
 
-	LOG_INF("pool start nfds: %d, timeout: %d", nfds, timeout);
+    LOG_INF("pool start nfds: %d, timeout: %d", nfds, timeout);
  
-	/* Make sure to reset revents */
-	for (int i = 0; i < nfds; i++) {
-		// LOG_INF("fd: %d", fds[i].fd);
-		// fds[i].revents = 0;
-		int retry = 0;
+    /* Make sure to reset revents */
+    for (int i = 0; i < nfds; i++)
+    {	
+        int retry = 0;
 
-		do {
-			struct erpc_wifi_socket *sock = find_socket_by_fd(fds[i].fd);
-			if (sock) {
-				fd_found++;
-				break;
-			}
-			k_msleep(10); // Wait a short time before checking again
-			} while (++retry < 4);
-			LOG_DBG("fd: %d found: %d, ret: %d", fds[i].fd, fd_found, retry);
-	}
+        do 
+		{
+            struct erpc_wifi_socket *sock = find_socket_by_fd(fds[i].fd);
+            if (sock) {
+            fd_found++;
+            break;
+            }
+            k_msleep(10); // Wait a short time before checking again
+            } while (++retry < 4);
+            LOG_DBG("fd: %d found: %d, ret: %d", fds[i].fd, fd_found, retry);
+    }
  
-	//k_msleep(300);
- 
-	if (!fd_found) {
-		LOG_ERR("No valid socket fd found");
-		return -1;
-	}
+    if (!fd_found) {
+        LOG_ERR("No valid socket fd found");
+        return -1;
+    }
     // No sockets ready yet, wait with periodic checks
     do {
-		ret = 0;
-		int found_inval = 0;
+        ret = 0;
+        found_inval = 0;
         // Check all sockets again
         for (int i = 0; i < nfds; i++) {
-        	uint16_t events = 0;
- 
-        	//fds[i].revents = 0;
+            uint16_t events = 0;
  
             struct erpc_wifi_socket *sock = find_socket_by_fd(fds[i].fd);
             if (!sock) {
-            	fds[i].revents = ZVFS_POLLNVAL;
-				//ret++;
-				found_inval++;
-				k_msleep(10); // Wait a short time before checking again
-				continue;
-			}
+                fds[i].revents = ZVFS_POLLNVAL;
+                found_inval++;
+                k_msleep(10); // Wait a short time before checking again
+                continue;
+            }
  
             events = get_socket_events(sock->fd);
  
@@ -840,40 +836,32 @@ static int erpc_wifi_socket_poll_offload(struct zvfs_pollfd *fds, int nfds, int 
  
             if (fds[i].revents != 0) {
                 ret++;
-				LOG_INF("pool nfds: %d, ret: %d", nfds, ret);
+                LOG_INF("pool nfds: %d, ret: %d", nfds, ret);
             }
  
 //            zsock_fd_event_notify(sock->fd, events);
         }
  
-		if (found_inval == nfds) {
-			return found_inval;
-		}
-    	// Check if timeout expired (unless forever)
-		if (!forever) {
-			int64_t elapsed = k_uptime_get() - start_time;
-			if (elapsed >= timeout) {
-				LOG_INF("pool timed out: elapsed: %d", elapsed);
-				break; // Timeout
-			}
-		}
- #if 0
-        if (ret > 0) {
-            break;
+        if (found_inval == nfds) {
+            return found_inval;
         }
-#endif
+        // Check if timeout expired (unless forever)
+        if (!forever) {
+            int64_t elapsed = k_uptime_get() - start_time;
+            if (elapsed >= timeout) {
+                LOG_INF("pool timed out: elapsed: %d", elapsed);
+                break; // Timeout
+            }
+        }
         // Wait a short time before checking again
-        k_msleep(10)
+        k_msleep(10);
 
     } while (true);
  
-	if (ret > 0) {
+    if (ret > 0) {
         LOG_INF("pool ended nfds: %d, ret: %d, found_inval: %d", nfds, ret, found_inval);
         return ret + found_inval;
     }
-	//LOG_INF("pool ended nfds: %d, ret: %d", nfds, ret);
- 
-    //return ret;
 }
 
 static int erpc_wifi_socket_poll_update(struct zvfs_pollfd *pfd, struct k_poll_event **pev)
