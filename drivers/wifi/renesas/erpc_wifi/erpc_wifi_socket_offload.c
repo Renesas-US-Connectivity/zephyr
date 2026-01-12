@@ -810,7 +810,7 @@ static int erpc_wifi_socket_poll_offload(struct zvfs_pollfd *fds, int nfds, int 
         // Check all sockets again
         for (int i = 0; i < nfds; i++) {
             uint16_t events = 0;
- 
+
             struct erpc_wifi_socket *sock = find_socket_by_fd(fds[i].fd);
             if (!sock) {
                 fds[i].revents = ZVFS_POLLNVAL;
@@ -853,6 +853,10 @@ static int erpc_wifi_socket_poll_offload(struct zvfs_pollfd *fds, int nfds, int 
                 break; // Timeout
             }
         }
+
+		if (ret > 0){
+			break;
+		}
         // Wait a short time before checking again
         k_msleep(10);
 
