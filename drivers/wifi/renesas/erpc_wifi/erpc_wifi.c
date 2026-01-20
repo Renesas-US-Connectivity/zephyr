@@ -565,6 +565,7 @@ static void ps_send_param_to_ra(ra_wifi_ps_param_t p, uint32_t v)
 {
 	(void)ra6w1_wifi_ps_set_param(p, v);
 }
+#if 1
 static void ps_allow_sleep_work(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -573,7 +574,24 @@ static void ps_allow_sleep_work(struct k_work *work)
 		LOG_INF("PS allow sleep: ignored (PS disabled)");
 		return;
 	}
-
+    if (g_ps.li_set) {
+		LOG_INF("PS set: LISTEN_INTERVAL=%u", g_ps.listen_interval);
+        ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_LISTEN_INTERVAL,
+                            g_ps.listen_interval);
+    }
+	if (g_ps.wm_set) {
+		LOG_INF("PS set: WAKEUP_MODE=%u", g_ps.wakeup_mode);
+        ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_WAKEUP_MODE,
+                            g_ps.wakeup_mode);
+    }
+    if (g_ps.ex_set) {
+        ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_EXIT_STRATEGY,
+                            g_ps.exit_strategy);
+    }
+    if (g_ps.tmo_set) {
+        ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_TIMEOUT_MS,
+                            g_ps.timeout_ms);
+    }
 	LOG_INF("PS allow sleep: applying PMGR config and releasing constraint");
 	int32_t rc = ra6w1_wifi_ps_apply();
 	if (rc != 0) {
@@ -590,6 +608,7 @@ static void ps_allow_sleep_work(struct k_work *work)
 
 	LOG_INF("PS enabled: sleep allowed");
 }
+#endif
 #if 0
 static void ps_allow_sleep_work(struct k_work *work)
 {
