@@ -609,52 +609,6 @@ static void ps_allow_sleep_work(struct k_work *work)
 	LOG_INF("PS enabled: sleep allowed");
 }
 #endif
-#if 0
-static void ps_allow_sleep_work(struct k_work *work)
-{
-	ARG_UNUSED(work);
-	LOG_INF("PS allow sleep work fired");
-	if (!g_ps.enabled) {
-		return;
-	}
-    if (g_ps.li_set) {
-		LOG_INF("PS set: LISTEN_INTERVAL=%u", g_ps.listen_interval);
-        ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_LISTEN_INTERVAL,
-                            g_ps.listen_interval);
-    }
-    if (g_ps.wm_set) {
-		LOG_INF("PS set: WAKEUP_MODE=%u", g_ps.wakeup_mode);
-        ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_WAKEUP_MODE,
-                            g_ps.wakeup_mode);
-    }
-    if (g_ps.ex_set) {
-        ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_EXIT_STRATEGY,
-                            g_ps.exit_strategy);
-    }
-    if (g_ps.tmo_set) {
-        ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_TIMEOUT_MS,
-                            g_ps.timeout_ms);
-    }
-	#if 1
-	int32_t rc = ra6w1_wifi_ps_apply();
-	if (rc != 0) {
-		LOG_INF("wifi_ps_apply failed rc=%d", rc);
-		return;
-	}
-#endif
-LOG_INF("PS allow sleep work: removing sleep constraint");
-	(void)ra6w1_pmgr_remove_sleep_constraint(1U << 0);
-	g_ps.allow_sleep_sent = true;
-
-	uint32_t gate_ms = 30000U;
-	if (g_ps.tmo_set && g_ps.timeout_ms > 0U) {
-		gate_ms = g_ps.timeout_ms + 5000U;
-	}
-	erpc_wifi_socket_tx_block_set(true, gate_ms);
-
-	LOG_INF("PS ENABLED: allow sleep (timeout=%u, gate=%u)", g_ps.timeout_ms, gate_ms);
-}
-#endif
 
 int erpc_wifi_ping(uint32_t timeout_ms)
 {
@@ -671,37 +625,6 @@ int erpc_wifi_ping(uint32_t timeout_ms)
 
 	return -EIO;
 }
-#if 0
-static int ps_set_state(bool enable)
-{
-	if (enable) {
-		g_ps.enabled = true;
-
-		
-		g_ps.allow_sleep_sent = false;
-		(void)ra6w1_pmgr_add_sleep_constraint(1U << 0);
-		uint32_t delay = (g_ps.tmo_set) ? g_ps.timeout_ms : 0U;
-
-		k_work_reschedule(&g_ps_enable_work, K_MSEC(delay));
-
-		erpc_wifi_socket_tx_block_set(false, 0U);
-
-		LOG_INF("PS STATE ENABLE requested (delay=%u ms)", delay);
-		return 0;
-	}
-	g_ps.enabled = false;
-	k_work_cancel_delayable(&g_ps_enable_work);
-
-	(void)ra6w1_pmgr_add_sleep_constraint(1U << 0);
-	g_ps.allow_sleep_sent = false;
-
-	erpc_wifi_socket_tx_block_set(false, 0U);
-
-	LOG_INF("PS STATE DISABLED");
-	return 0;
-}
-#endif
-
 static int erpc_wifi_mgmt_set_power_save(struct net_if *iface,
 					struct wifi_ps_params *params)
 {
@@ -812,68 +735,6 @@ static int erpc_wifi_mgmt_set_power_save(struct net_if *iface,
 		return -ENOTSUP;
 	}
 }
-#if 0
-/* original version */
-static int erpc_wifi_mgmt_set_power_save(struct net_if *iface,
-					struct wifi_ps_params *params)
-{
-	ARG_UNUSED(iface);
-
-	if (params == NULL) {
-		return -EINVAL;
-	}
-
-	LOG_INF("PS set: type=%u enabled=%u li=%u wm=%u exit=%u tmo=%u",
-		params->type, params->enabled,
-		params->listen_interval, params->wakeup_mode,
-		params->exit_strategy, params->timeout_ms);
-
-	switch (params->type) {
-
-	case WIFI_PS_PARAM_LISTEN_INTERVAL:
-		g_ps.listen_interval = (uint32_t)params->listen_interval;
-		g_ps.li_set = true;
-		ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_LISTEN_INTERVAL,
-				    g_ps.listen_interval);
-		return 0;
-
-	case WIFI_PS_PARAM_WAKEUP_MODE:
-		g_ps.wakeup_mode = (uint32_t)params->wakeup_mode;
-		g_ps.wm_set = true;
-		ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_WAKEUP_MODE,
-				    g_ps.wakeup_mode);
-		return 0;
-
-	case WIFI_PS_PARAM_EXIT_STRATEGY:
-		g_ps.exit_strategy = (uint32_t)params->exit_strategy;
-		g_ps.ex_set = true;
-		ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_EXIT_STRATEGY,
-				    g_ps.exit_strategy);
-		return 0;
-
-	case WIFI_PS_PARAM_TIMEOUT:
-		g_ps.timeout_ms = (uint32_t)params->timeout_ms;
-		g_ps.tmo_set = true;
-		ps_send_param_to_ra((ra_wifi_ps_param_t)RA_WIFI_PS_PARAM_TIMEOUT_MS,
-				    g_ps.timeout_ms);
-		if (g_ps.enabled && !g_ps.allow_sleep_sent) {
-			k_work_reschedule(&g_ps_enable_work, K_MSEC(g_ps.timeout_ms));
-		}
-		return 0;
-
-	case WIFI_PS_PARAM_STATE:
-		if (params->enabled == WIFI_PS_ENABLED) {
-			return ps_set_state(true);
-		} else if (params->enabled == WIFI_PS_DISABLED) {
-			return ps_set_state(false);
-		}
-		return -EINVAL;
-
-	default:
-		return -ENOTSUP;
-	}
-}
-#endif
 
 /*
 	Parameters returned from this function via wifi_iface_status:
