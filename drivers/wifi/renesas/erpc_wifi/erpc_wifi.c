@@ -281,7 +281,9 @@ static void erpc_wifi_mgmt_scan_work(struct k_work *work)
 	if (results != NULL) {
 		memset(results, 0, dev->scan_max_bss_cnt * sizeof(WIFIScanResult_t));
 
+		erpc_wifi_lock();
 		ret = WIFI_Scan(results, dev->scan_max_bss_cnt);
+		erpc_wifi_unlock();
 
 		LOG_DBG("WIFI_Scan: %d", ret);
 
@@ -466,7 +468,9 @@ static void erpc_wifi_mgmt_connect_work(struct k_work *work)
 	LOG_DBG("xWPA.ucLength: %d", dev->drv_nwk_params.xPassword.xWPA.ucLength);
 	LOG_DBG("ucChannel: %d", dev->drv_nwk_params.ucChannel);
 
+	erpc_wifi_lock();
 	ret = WIFI_ConnectAP(&dev->drv_nwk_params);
+	erpc_wifi_unlock();
 
 	LOG_DBG("WIFI_ConnectAP: %d", ret);
 
@@ -502,7 +506,9 @@ static void erpc_wifi_mgmt_disconnect_work(struct k_work *work)
 
 	dev = CONTAINER_OF(work, struct erpc_wifi_data, disconnect_work);
 
+	erpc_wifi_lock();
 	ret = WIFI_Disconnect();
+	erpc_wifi_unlock();
 
 	LOG_DBG("WIFI_Disconnect: %d", ret);
 
@@ -1007,7 +1013,9 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 			continue;
 		}
 
+		erpc_wifi_lock();
 		erpc_get_server_event(&event);
+		erpc_wifi_unlock();
 
 		struct net_if *iface = data->net_iface;
 		if (!iface) {
