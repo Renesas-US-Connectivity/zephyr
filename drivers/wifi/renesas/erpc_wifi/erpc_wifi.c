@@ -848,11 +848,14 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 			LOG_INF("DHCP IPv4 applied: %s", ip_str);
 			LOG_INF("Netmask: %s, Gateway: %s", netmask_str, gateway_str);
 
+			erpc_wifi_driver_data.ipv4_assigned = true;
+
 			// Notify the network management system about IPv4 assignment
 			net_mgmt_event_notify(NET_EVENT_IPV4_DHCP_BOUND, iface);
 		} else {
 			LOG_ERR("Failed to add IPv4 address to interface");
 		}
+#if defined(CONFIG_NET_IPV6)
 	} else if (config->xIPAddress.xType == eWiFiIPAddressTypeV6) {
 		struct in6_addr ip6;
 		char ip6_str[INET6_ADDRSTRLEN];
@@ -866,11 +869,14 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 		if (net_if_ipv6_addr_add(iface, &ip6, NET_ADDR_MANUAL, 0)) {
 			LOG_INF("IPv6 address applied: %s", ip6_str);
 
+			erpc_wifi_driver_data.ipv6_assigned = true;
+
 			// Notify the network management system about IPv6 assignment
 			net_mgmt_event_notify(NET_EVENT_IPV6_ADDR_ADD, iface);
 		} else {
 			LOG_ERR("Failed to apply IPv6 address: %s", ip6_str);
 		}
+#endif
 	}
 
 	// Ensure interface is up
@@ -1026,7 +1032,14 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		case eNetworkInterfaceIPAssigned:
 			LOG_INF("Server: IP assigned - applying IP");
 			erpc_wifi_apply_dhcp_lease(iface, &event.event_data.xConfig);
-			event_monitor_running = false;
+			if (data->ipv4_assigned
+#if defined(CONFIG_NET_IPV6)
+			    && data->ipv6_assigned
+#endif
+			) {
+				event_monitor_running = false;
+				LOG_INF("IP assignment completed. Stopping event monitor.");
+			}
 			break;
 
 		default:
@@ -1047,6 +1060,10 @@ int erpc_wifi_start_event_monitor(struct erpc_wifi_data *data)
 		return -EALREADY;
 	}
 
+	data->ipv4_assigned = false;
+#if defined(CONFIG_NET_IPV6)
+	data->ipv6_assigned = false;
+#endif
 	event_monitor_running = true;
 
 	// Create and start the thread
