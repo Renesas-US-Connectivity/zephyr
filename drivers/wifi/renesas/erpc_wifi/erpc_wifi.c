@@ -1053,8 +1053,6 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		default:
 			break;
 		}
-
-		k_sleep(K_SECONDS(3));
 	}
 }
 #endif
