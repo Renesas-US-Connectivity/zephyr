@@ -1002,7 +1002,6 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 {
 	struct erpc_wifi_data *data = (struct erpc_wifi_data *)arg1;
 	struct ra_erp_server_event_t event;
-	int ret;
 	enum wifi_iface_state state;
 
 	while (event_monitor_running) {
@@ -1012,6 +1011,13 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 			k_sleep(K_SECONDS(2));
 			continue;
 		}
+		if (data->ipv4_assigned
+#if defined(CONFIG_NET_IPV6)
+		    && data->ipv6_assigned
+#endif
+		) {
+			k_sleep(K_SECONDS(2));
+		}
 
 		erpc_wifi_lock();
 		erpc_get_server_event(&event);
@@ -1020,39 +1026,38 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		struct net_if *iface = data->net_iface;
 		if (!iface) {
 			LOG_WRN("No network interface available for event handling, waiting...");
+			k_msleep(500);
 			continue;
 		}
 
 		switch (event.event_id) {
 		case eNetworkInterfaceUp:
 			LOG_INF("Server: Network interface up");
-			// net_if_set_up(iface);
 			net_mgmt_event_notify(NET_EVENT_IF_UP, iface);
 			break;
 
 		case eNetworkInterfaceDown:
 			LOG_INF("Server: Network interface down");
-			// net_if_set_down(iface);
 			net_mgmt_event_notify(NET_EVENT_IF_DOWN, iface);
-			// erpc_wifi_clear_ip();
+			data->ipv4_assigned = false;
+#if defined(CONFIG_NET_IPV6)
+			data->ipv6_assigned = false;
+#endif
 			break;
 
 		case eNetworkInterfaceIPAssigned:
 			LOG_INF("Server: IP assigned - applying IP");
 			erpc_wifi_apply_dhcp_lease(iface, &event.event_data.xConfig);
-			if (data->ipv4_assigned
-#if defined(CONFIG_NET_IPV6)
-			    && data->ipv6_assigned
-#endif
-			) {
-				event_monitor_running = false;
-				LOG_INF("IP assignment completed. Stopping event monitor.");
-			}
 			break;
 
 		default:
 			break;
 		}
+
+		/* Small sleep to prevent busy-polling in case erpc_get_server_event is non-blocking
+		 * and no events are pending.
+		 */
+		k_msleep(200);
 	}
 }
 #endif
@@ -1060,7 +1065,6 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 // Function to start the event monitor thread
 int erpc_wifi_start_event_monitor(struct erpc_wifi_data *data)
 {
-	printk("Starting event monitor thread...\n");
 	if (event_monitor_running) {
 		LOG_WRN("Event monitor already running");
 		return -EALREADY;
