@@ -844,6 +844,7 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 		net_addr_pton(AF_INET, gateway_str, &gateway);
 
 		// Clear existing addresses and add new one
+#if defined(CONFIG_NET_IPV4)
 		net_if_ipv4_addr_rm(iface, NULL);
 		struct net_if_addr *ifaddr = net_if_ipv4_addr_add(iface, &ip, NET_ADDR_MANUAL, 0);
 
@@ -861,6 +862,7 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 		} else {
 			LOG_ERR("Failed to add IPv4 address to interface");
 		}
+#endif
 #if defined(CONFIG_NET_IPV6)
 	} else if (config->xIPAddress.xType == eWiFiIPAddressTypeV6) {
 		struct in6_addr ip6;
@@ -1011,13 +1013,19 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 			k_sleep(K_SECONDS(2));
 			continue;
 		}
+#if defined(CONFIG_NET_IPV4) && defined(CONFIG_NET_IPV6)
+		if (data->ipv4_assigned && data->ipv6_assigned) {
+			k_sleep(K_SECONDS(2));
+		}
+#else
 		if (data->ipv4_assigned
 #if defined(CONFIG_NET_IPV6)
-		    && data->ipv6_assigned
+		    || data->ipv6_assigned
 #endif
 		) {
 			k_sleep(K_SECONDS(2));
 		}
+#endif
 
 		erpc_wifi_lock();
 		erpc_get_server_event(&event);
