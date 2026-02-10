@@ -229,6 +229,7 @@ static struct erpc_wifi_socket sockets[ERPC_WIFI_MAX_SOCKETS];
 K_THREAD_STACK_DEFINE(erpc_wifi_socket_poll_stack, 1024);
 static struct k_thread erpc_wifi_socket_poll_thread_data;
 static k_tid_t erpc_wifi_socket_poll_tid;
+static struct k_sem poll_task_sem;
 static void erpc_wifi_socket_poll_task(void *arg1, void *arg2, void *arg3)
 {
 	ARG_UNUSED(arg1);
@@ -236,23 +237,35 @@ static void erpc_wifi_socket_poll_task(void *arg1, void *arg2, void *arg3)
 	ARG_UNUSED(arg3);
 
 	while (1) {
-		for (int i = 0; i < ERPC_WIFI_MAX_SOCKETS; i++) {
-			struct erpc_wifi_socket *sock = &sockets[i];
+		/* Wait until signaled that a socket is waiting for events */
+		(void)k_sem_take(&poll_task_sem, K_FOREVER);
 
-			if (sock->in_use && sock->waiting) {
-				erpc_wifi_lock();
-				uint32_t events = get_socket_events(sock->fd);
-				erpc_wifi_unlock();
+		bool activity = true;
+		while (activity) {
+			activity = false;
+			for (int i = 0; i < ERPC_WIFI_MAX_SOCKETS; i++) {
+				struct erpc_wifi_socket *sock = &sockets[i];
 
-				if (events &
-				    (SOCKET_EVENT_RX | SOCKET_EVENT_ERR | SOCKET_EVENT_CLOSE)) {
-					sock->triggered_events = (short)events;
-					sock->waiting = false;
-					k_poll_signal_raise(&sock->poll_signal, (int)events);
+				if (sock->in_use && sock->waiting) {
+					activity = true;
+					erpc_wifi_lock();
+					uint32_t events = get_socket_events(sock->fd);
+					erpc_wifi_unlock();
+
+					if (events & (SOCKET_EVENT_RX | SOCKET_EVENT_ERR |
+						      SOCKET_EVENT_CLOSE)) {
+						sock->triggered_events = (short)events;
+						sock->waiting = false;
+						k_poll_signal_raise(&sock->poll_signal,
+								    (int)events);
+					}
 				}
 			}
+
+			if (activity) {
+				k_msleep(200);
+			}
 		}
-		k_msleep(200);
 	}
 }
 
@@ -1007,6 +1020,10 @@ static int erpc_wifi_socket_poll_offload(struct zvfs_pollfd *fds, int nfds, int 
 		}
 	}
 
+	if (tracked_count > 0) {
+		k_sem_give(&poll_task_sem);
+	}
+
 	if (ready_count > 0 || timeout == 0) {
 		goto update_revents;
 	}
@@ -1120,6 +1137,8 @@ static int erpc_wifi_socket_ioctl(void *obj, unsigned int request, va_list args)
 		k_poll_event_init(*pev, K_POLL_TYPE_SIGNAL, K_POLL_MODE_NOTIFY_ONLY,
 				  &sock->poll_signal);
 		(*pev)++;
+
+		k_sem_give(&poll_task_sem);
 
 		return 0;
 	}
@@ -1237,6 +1256,7 @@ static bool erpc_wifi_socket_is_supported(int family, int type, int proto)
 int erpc_wifi_socket_offload_init(struct net_if *iface)
 {
 	memset(sockets, 0, sizeof(sockets));
+	k_sem_init(&poll_task_sem, 0, 1);
 
 	net_if_socket_offload_set(iface, erpc_wifi_socket_create);
 
