@@ -17,9 +17,8 @@
 #include <zephyr/toolchain.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/logging/log.h>
 #include "erpc_wifi_transport.h"
-
+LOG_MODULE_REGISTER(erpc_wifi_transport_spi, CONFIG_WIFI_LOG_LEVEL);
 struct erpc_wifi_spi_config {
 	struct gpio_dt_spec n_int;
 	struct spi_dt_spec bus;
@@ -35,14 +34,16 @@ erpc_transport_t erpc_wifi_transport_init(void)
 	const struct erpc_wifi_spi_config *cfg = &erpc_wifi_config_spi0;
 	g_slave_ready_gpio = &cfg->n_int;
 	if (!spi_is_ready_dt(&cfg->bus)) {
-		//LOG_ERR("SPI bus is not ready");
+		LOG_ERR("SPI bus is not ready");
 		return NULL;
 	};
 	if (!device_is_ready(cfg->n_int.port)) {
 		printf("Slave-ready GPIO controller not ready: %s", cfg->n_int.port->name);
 		return NULL;
 	} 
-
+	if (0 != gpio_pin_configure_dt(&cfg->n_int, GPIO_INPUT)) {
+		return NULL;
+	}
 	return erpc_transport_zephyr_spi_master_init((void *)&cfg->bus, (void *)&cfg->n_int);
 }
 

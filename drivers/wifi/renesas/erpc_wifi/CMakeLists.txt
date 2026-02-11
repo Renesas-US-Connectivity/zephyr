@@ -7,6 +7,7 @@ if(CONFIG_WIFI_ERPC_WIFI)
 	erpc_wifi_socket_offload.c
 	erpc_dns_offload.c
 	service/c_wifi_host_to_ra_client.cpp
+	service/c_wifi_ra_to_host_client.cpp
 	service/wifi_host_to_ra_client.cpp
 	service/wifi_host_to_ra_interface.cpp
 
