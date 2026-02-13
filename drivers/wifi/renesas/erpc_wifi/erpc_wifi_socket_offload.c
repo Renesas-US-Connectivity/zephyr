@@ -401,17 +401,41 @@ static int erpc_wifi_socket_addr_from_posix(const struct sockaddr *addr,
 {
 	int err;
 
+	memset(addr_erpc_wifi, 0, sizeof(struct ra_erpc_sockaddr));
+
 	err = erpc_wifi_socket_family_from_posix(addr->sa_family, &addr_erpc_wifi->sa_family);
 	if (err) {
 		LOG_ERR("%s - unsupported family: %d", __FUNCTION__, addr->sa_family);
 		return err;
 	}
 
-	memcpy(addr_erpc_wifi->sa_data, addr->data, sizeof(addr_erpc_wifi->sa_data));
+	if (addr->sa_family == AF_INET) {
+		const struct sockaddr_in *sin = net_sin(addr);
+		addr_erpc_wifi->sa_len = 16;
+		memcpy(addr_erpc_wifi->sa_data, &sin->sin_port, 2);
+		memcpy(&addr_erpc_wifi->sa_data[2], &sin->sin_addr, 4);
+	}
+#if defined(CONFIG_NET_IPV6)
+	else if (addr->sa_family == AF_INET6) {
+		const struct sockaddr_in6 *sin6 = net_sin6(addr);
+		addr_erpc_wifi->sa_len = 28;
+		/* Map Zephyr sockaddr_in6 to RA6W1/LwIP layout (28 bytes in sa_data) */
+		/* 0-1: port */
+		memcpy(addr_erpc_wifi->sa_data, &sin6->sin6_port, 2);
+		/* 2-5: flowinfo (not in Zephyr) */
+		memset(&addr_erpc_wifi->sa_data[2], 0, 4);
+		/* 6-21: addr */
+		memcpy(&addr_erpc_wifi->sa_data[6], &sin6->sin6_addr, 16);
+		/* 22-25: scope_id (1 byte in Zephyr, 4 in RA6W1) */
+		memset(&addr_erpc_wifi->sa_data[22], 0, 4);
+		addr_erpc_wifi->sa_data[22] = sin6->sin6_scope_id;
+	}
+#endif
+	else {
+		return -EAFNOSUPPORT;
+	}
 
-	addr_erpc_wifi->sa_len = sizeof(addr->data);
-
-	return err;
+	return 0;
 }
 
 static int erpc_wifi_socket_addr_to_posix(struct sockaddr *addr,
@@ -425,9 +449,26 @@ static int erpc_wifi_socket_addr_to_posix(struct sockaddr *addr,
 		return err;
 	}
 
-	memcpy(addr->data, addr_erpc_wifi->sa_data, sizeof(addr->data));
+	if (addr->sa_family == AF_INET) {
+		struct sockaddr_in *sin = net_sin(addr);
+		memcpy(&sin->sin_port, addr_erpc_wifi->sa_data, 2);
+		memcpy(&sin->sin_addr, &addr_erpc_wifi->sa_data[2], 4);
+	}
+#if defined(CONFIG_NET_IPV6)
+	else if (addr->sa_family == AF_INET6) {
+		struct sockaddr_in6 *sin6 = net_sin6(addr);
+		/* Map RA6W1/LwIP layout back to Zephyr */
+		memcpy(&sin6->sin6_port, addr_erpc_wifi->sa_data, 2);
+		/* flowinfo at sa_data[2] is ignored/not in Zephyr */
+		memcpy(&sin6->sin6_addr, &addr_erpc_wifi->sa_data[6], 16);
+		sin6->sin6_scope_id = addr_erpc_wifi->sa_data[22];
+	}
+#endif
+	else {
+		return -EAFNOSUPPORT;
+	}
 
-	return err;
+	return 0;
 }
 
 static struct erpc_wifi_socket *erpc_wifi_socket_allocate(int fd, int zfd)
@@ -486,7 +527,7 @@ static int erpc_wifi_socket_bind(void *obj, const struct sockaddr *addr, socklen
 	}
 
 	erpc_wifi_lock();
-	ret = ra6w1_bind(sock->fd, &addr_erpc_wifi, sizeof(struct ra_erpc_sockaddr));
+	ret = ra6w1_bind(sock->fd, &addr_erpc_wifi, addr_erpc_wifi.sa_len);
 	erpc_wifi_unlock();
 
 	LOG_DBG("ra6w1_bind: %d", ret);
@@ -501,7 +542,6 @@ static int erpc_wifi_socket_connect(void *obj, const struct sockaddr *addr, sock
 		LOG_INF("wait_ra_awake failed: IN %s = %d", __func__, __w);
 		return __w;
 	}
-
 	int ret;
 	struct ra_erpc_sockaddr addr_erpc_wifi;
 	struct erpc_wifi_socket *sock = (struct erpc_wifi_socket *)obj;
@@ -509,24 +549,30 @@ static int erpc_wifi_socket_connect(void *obj, const struct sockaddr *addr, sock
 	LOG_DBG("sa_family: %d", addr->sa_family);
 	LOG_DBG("addrlen: %d", addrlen);
 	LOG_DBG("fd: %d", sock->fd);
-
+	// addr->sa_family = AF_INET6;
 	if (addr->sa_family == AF_INET) {
-		char addr_str[NET_IPV4_ADDR_LEN];
-		struct sockaddr_in *s_addr;
-
-		s_addr = net_sin(addr);
+		char addr_str[INET_ADDRSTRLEN];
+		struct sockaddr_in *s_addr = net_sin(addr);
 
 		net_addr_ntop(addr->sa_family, &s_addr->sin_addr, addr_str, sizeof(addr_str));
-
 		LOG_DBG("sin: addr: %s port: %d", addr_str, ntohs(s_addr->sin_port));
 	}
+#if defined(CONFIG_NET_IPV6)
+	else if (addr->sa_family == AF_INET6) {
+		char addr_str[INET6_ADDRSTRLEN];
+		struct sockaddr_in6 *s_addr = net_sin6(addr);
+
+		net_addr_ntop(addr->sa_family, &s_addr->sin6_addr, addr_str, sizeof(addr_str));
+		LOG_DBG("sin6: addr: %s port: %d", addr_str, ntohs(s_addr->sin6_port));
+	}
+#endif
 
 	ret = erpc_wifi_socket_addr_from_posix(addr, &addr_erpc_wifi);
 	if (ret) {
 		return ret;
 	}
 	erpc_wifi_lock();
-	ret = ra6w1_connect(sock->fd, &addr_erpc_wifi, sizeof(struct ra_erpc_sockaddr));
+	ret = ra6w1_connect(sock->fd, &addr_erpc_wifi, addr_erpc_wifi.sa_len);
 	erpc_wifi_unlock();
 	LOG_DBG("ra6w1_connect: %d", ret);
 
@@ -638,7 +684,7 @@ static ssize_t erpc_wifi_socket_sendto(void *obj, const void *buf, size_t len, i
 		}
 		erpc_wifi_lock();
 		ret = ra6w1_sendto(sock->fd, buf, len, flags, &addr_erpc_wifi,
-				   sizeof(ra_erpc_sockaddr));
+				   addr_erpc_wifi.sa_len);
 		erpc_wifi_unlock();
 		LOG_DBG("ra6w1_sendto: %d", ret);
 
@@ -769,13 +815,14 @@ static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, i
 		}
 
 		if (src_addr) {
+			struct ra_erpc_sockaddr addr_erpc_wifi;
 			erpc_wifi_lock();
-			ret = ra6w1_recvfrom(sock->fd, buf, max_len, nb_flags,
-					     (ra_erpc_sockaddr *)src_addr, addrlen);
+			ret = ra6w1_recvfrom(sock->fd, buf, max_len, nb_flags, &addr_erpc_wifi,
+					     addrlen);
 			erpc_wifi_unlock();
 
 			if (ret >= 0) {
-				src_addr->sa_family = AF_INET;
+				erpc_wifi_socket_addr_to_posix(src_addr, &addr_erpc_wifi);
 			}
 		} else {
 			erpc_wifi_lock();
@@ -1242,11 +1289,11 @@ static bool erpc_wifi_socket_is_supported(int family, int type, int proto)
 		return false;
 	}
 
-	if (type != SOCK_DGRAM && type != SOCK_STREAM) {
+	if (type != SOCK_DGRAM && type != SOCK_STREAM && type != SOCK_RAW) {
 		return false;
 	}
 
-	if (proto != IPPROTO_TCP && proto != IPPROTO_UDP) {
+	if (proto != IPPROTO_TCP && proto != IPPROTO_UDP && proto != IPPROTO_ICMPV6) {
 		return false;
 	}
 

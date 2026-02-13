@@ -48,7 +48,7 @@ static struct k_thread erpc_wifi_server_thread_data;
 
 K_KERNEL_STACK_DEFINE(erpc_wifi_workq_stack, CONFIG_WIFI_ERPC_WIFI_WORKQ_STACK_SIZE);
 
-#define EVENT_MONITOR_STACK_SIZE 2048
+#define EVENT_MONITOR_STACK_SIZE 4096
 K_THREAD_STACK_DEFINE(event_monitor_stack, EVENT_MONITOR_STACK_SIZE);
 
 // Thread control structure
@@ -874,8 +874,13 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 		net_addr_ntop(AF_INET6, &ip6, ip6_str, sizeof(ip6_str));
 
 		// In Zephyr, we usually just add the address.
+		// net_if_ipv6_addr_add automatically handles address type
 		if (net_if_ipv6_addr_add(iface, &ip6, NET_ADDR_MANUAL, 0)) {
-			LOG_INF("IPv6 address applied: %s", ip6_str);
+			if (net_ipv6_is_ll_addr(&ip6)) {
+				LOG_INF("Link-Local IPv6 address applied: %s", ip6_str);
+			} else {
+				LOG_INF("Global IPv6 address applied: %s", ip6_str);
+			}
 
 			erpc_wifi_driver_data.ipv6_assigned = true;
 
