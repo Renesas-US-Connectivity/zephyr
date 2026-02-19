@@ -731,189 +731,63 @@ ssize_t erpc_wifi_socket_sendmsg(void *obj, const struct msghdr *msg, int flags)
 	return -ENODATA;
 }
 
-static int wait_remote_rx_ready(struct erpc_wifi_socket *sock, int timeout_ms)
-{
-	int64_t start = k_uptime_get();
-	bool forever = (timeout_ms == SYS_FOREVER_MS);
-
-	while (1) {
-		int __w = wait_ra_awake(ERPC_PMGR_JOB_ID_RECV);
-		if (__w != 0) {
-			errno = EAGAIN;
-			return -1;
-		}
-		erpc_wifi_lock();
-		uint32_t ev = get_socket_events(sock->fd);
-		erpc_wifi_unlock();
-
-		if (ev & SOCKET_EVENT_RX) {
-			return 0;
-		}
-
-		if (!forever && (k_uptime_get() - start) >= timeout_ms) {
-			errno = EAGAIN;
-			return -1;
-		}
-
-		k_msleep(10);
-	}
-}
-
 static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, int flags,
 					 struct sockaddr *src_addr, socklen_t *addrlen)
 {
-	int ret = -1;
-	struct erpc_wifi_socket *sock = (struct erpc_wifi_socket *)obj;
-
-	if (!sock) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	LOG_DBG("fd: %d", sock->fd);
-	LOG_DBG("max_len: %d", (int)max_len);
-	LOG_DBG("src_addr: %x", (uint32_t)src_addr);
-	LOG_DBG("addrlen: %x", (uint32_t)addrlen);
-
-	const bool nonblock = ((flags & ZSOCK_MSG_DONTWAIT) != 0);
-	const int nb_flags = flags | ZSOCK_MSG_DONTWAIT;
-	int w = wait_ra_awake(ERPC_PMGR_JOB_ID_RECV);
-	if (w != 0) {
-		LOG_WRN("wait_ra_awake failed in %s = %d", __func__, w);
-		errno = EAGAIN;
-		return -1;
-	}
-	(void)ra6w1_pmgr_dpm_job_name_set(ERPC_PMGR_JOB_ID_RECV, "ERPC_TCP_RECV");
-	(void)ra6w1_pmgr_dpm_rcv_ready_set(ERPC_PMGR_JOB_ID_RECV);
-
-	while (1) {
-		erpc_wifi_lock();
-		uint32_t ev = get_socket_events(sock->fd);
-		erpc_wifi_unlock();
-		if (ev & SOCKET_EVENT_ERR) {
-			errno = ECONNRESET;
-			ret = -1;
-			break;
-		}
-		if (ev & SOCKET_EVENT_CLOSE) {
-			errno = ENOTCONN;
-			ret = -1;
-			break;
-		}
-		if ((ev & SOCKET_EVENT_RX) == 0) {
-			if (nonblock) {
-				errno = EAGAIN;
-				ret = -1;
-				break;
-			}
-			if (wait_remote_rx_ready(sock, SYS_FOREVER_MS) != 0) {
-				errno = EAGAIN;
-				ret = -1;
-				break;
-			}
-			continue;
-		}
-
-		if (src_addr) {
-			struct ra_erpc_sockaddr addr_erpc_wifi;
-			erpc_wifi_lock();
-			ret = ra6w1_recvfrom(sock->fd, buf, max_len, nb_flags, &addr_erpc_wifi,
-					     addrlen);
-			erpc_wifi_unlock();
-
-			if (ret >= 0) {
-				erpc_wifi_socket_addr_to_posix(src_addr, &addr_erpc_wifi);
-			}
-		} else {
-			erpc_wifi_lock();
-			ret = ra6w1_recv(sock->fd, buf, max_len, nb_flags);
-			erpc_wifi_unlock();
-		}
-
-		if (ret >= 0) {
-			break;
-		}
-		erpc_wifi_lock();
-		ev = get_socket_events(sock->fd);
-		erpc_wifi_unlock();
-
-		if (ev & SOCKET_EVENT_ERR) {
-			errno = ECONNRESET;
-			break;
-		} else if (ev & SOCKET_EVENT_CLOSE) {
-			errno = ENOTCONN;
-			break;
-		} else {
-			errno = EAGAIN;
-		}
-
-		if (nonblock) {
-			break;
-		}
-		if (wait_remote_rx_ready(sock, SYS_FOREVER_MS) != 0) {
-			errno = EAGAIN;
-			ret = -1;
-			break;
-		}
-	}
-	(void)ra6w1_pmgr_dpm_wakeup_done(ERPC_PMGR_JOB_ID_RECV);
-
-	LOG_DBG("erpc_wifi_socket_recvfrom return=%d errno=%d", ret, errno);
-	return ret;
-}
-
-#if 0
-/* Original version before fix */
-static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, int flags,
-			    struct sockaddr *src_addr, socklen_t *addrlen)
-{
 	int __w = wait_ra_awake(ERPC_PMGR_JOB_ID_RECV);
-	if (__w != 0) { 
-		LOG_INF("wait_ra_awake failed: IN %s = %d", __func__,__w);
-		return __w; 
+	if (__w != 0) {
+		LOG_INF("wait_ra_awake failed: IN %s = %d", __func__, __w);
+		return __w;
 	}
 
 	int ret;
 	struct erpc_wifi_socket *sock = (struct erpc_wifi_socket *)obj;
-	
+
 	LOG_DBG("fd: %d", sock->fd);
 	LOG_DBG("max_len: %d", max_len);
 	LOG_DBG("src_addr: %x", (uint32_t)src_addr);
 	LOG_DBG("addrlen: %x", (uint32_t)addrlen);
 
-	if (src_addr) {		ret = ra6w1_recvfrom(sock->fd, buf, max_len, flags, (ra_erpc_sockaddr *)src_addr, addrlen);		LOG_DBG("ra6w1_recvfrom: %d", ret);
-	
+	if (src_addr) {
+		erpc_wifi_lock();
+		ret = ra6w1_recvfrom(sock->fd, buf, max_len, flags, (ra_erpc_sockaddr *)src_addr,
+				     addrlen);
+		erpc_wifi_unlock();
+		LOG_DBG("ra6w1_recvfrom: %d", ret);
+
 		if (src_addr) {
 			LOG_DBG("family: %d", src_addr->sa_family);
-			LOG_DBG("address: %d.%d.%d.%d", src_addr->data[2], src_addr->data[3], src_addr->data[4], src_addr->data[5]);
+			LOG_DBG("address: %d.%d.%d.%d", src_addr->data[2], src_addr->data[3],
+				src_addr->data[4], src_addr->data[5]);
 			LOG_DBG("port: %d", ((struct sockaddr_in *)src_addr)->sin_port);
 
-			if (addrlen) {	
+			if (addrlen) {
 				LOG_DBG("addrlen: %d", *addrlen);
 			}
 
 			// TODO - Temporary fix because incorrect address type is returned, probably
-			// due to a problem in the service (wifi.erpc) definition of this function...
-			//src_addr->sa_family = ERPC_WIFI_AF_INET;
-			//erpc_wifi_socket_family_to_posix(src_addr->sa_family, &src_addr->sa_family);
+			// due to a problem in the service (wifi.erpc) definition of this
+			// function...
+			// src_addr->sa_family = ERPC_WIFI_AF_INET;
+			// erpc_wifi_socket_family_to_posix(src_addr->sa_family,
+			// &src_addr->sa_family);
 
 			src_addr->sa_family = AF_INET;
 		}
 	} else {
 
+		(void)ra6w1_pmgr_dpm_job_name_set(ERPC_PMGR_JOB_ID_RECV, "ERPC_TCP_RECV");
 
-(void)ra6w1_pmgr_dpm_job_name_set(ERPC_PMGR_JOB_ID_RECV, "ERPC_TCP_RECV");
-
-(void)ra6w1_pmgr_dpm_rcv_ready_set(ERPC_PMGR_JOB_ID_RECV);
-
+		(void)ra6w1_pmgr_dpm_rcv_ready_set(ERPC_PMGR_JOB_ID_RECV);
+		erpc_wifi_lock();
 		ret = ra6w1_recv(sock->fd, buf, max_len, flags);
+		erpc_wifi_unlock();
 
 		LOG_DBG("ra6w1_recvfrom: %d", ret);
 	}
 
 	return ret;
 }
-#endif
 
 static int erpc_wifi_socket_getsockopt(void *obj, int level, int optname, void *optval,
 				       socklen_t *optlen)
