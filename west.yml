@@ -146,7 +146,7 @@ manifest:
 
     - name: erpc_wifi_service
       url: https://github.com/Renesas-US-Connectivity/ra_wifi_erpc_service
-      revision: bd1683375b57c737099896c7789628b237cd2ffc
+      revision: f94924a4deca5ed7284d891ddecac63c35e703f9
       path: zephyr/drivers/wifi/renesas/erpc_wifi/service
 
     - name: fatfs
