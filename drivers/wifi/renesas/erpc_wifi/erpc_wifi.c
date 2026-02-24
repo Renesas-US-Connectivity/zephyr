@@ -48,7 +48,7 @@ static struct k_thread erpc_wifi_server_thread_data;
 
 K_KERNEL_STACK_DEFINE(erpc_wifi_workq_stack, CONFIG_WIFI_ERPC_WIFI_WORKQ_STACK_SIZE);
 
-#define EVENT_MONITOR_STACK_SIZE 2048
+#define EVENT_MONITOR_STACK_SIZE 4096
 K_THREAD_STACK_DEFINE(event_monitor_stack, EVENT_MONITOR_STACK_SIZE);
 
 // Thread control structure
@@ -874,10 +874,16 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 		net_addr_ntop(AF_INET6, &ip6, ip6_str, sizeof(ip6_str));
 
 		// In Zephyr, we usually just add the address.
+		// net_if_ipv6_addr_add automatically handles address type
 		if (net_if_ipv6_addr_add(iface, &ip6, NET_ADDR_MANUAL, 0)) {
-			LOG_INF("IPv6 address applied: %s", ip6_str);
-
-			erpc_wifi_driver_data.ipv6_assigned = true;
+			// Ensure interface is up
+			net_if_up(iface);
+			if (net_ipv6_is_ll_addr(&ip6)) {
+				LOG_INF("Link-Local IPv6 address applied: %s", ip6_str);
+			} else {
+				LOG_INF("Global IPv6 address applied: %s", ip6_str);
+				erpc_wifi_driver_data.ipv6_assigned = true;
+			}
 
 			// Notify the network management system about IPv6 assignment
 			net_mgmt_event_notify(NET_EVENT_IPV6_ADDR_ADD, iface);
@@ -887,6 +893,7 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 #endif
 	}
 
+ensure_up:
 	// Ensure interface is up
 	net_if_up(iface);
 	LOG_INF("IP configuration applied to interface");
@@ -1015,7 +1022,7 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		}
 #if defined(CONFIG_NET_IPV4) && defined(CONFIG_NET_IPV6)
 		if (data->ipv4_assigned && data->ipv6_assigned) {
-			k_sleep(K_SECONDS(2));
+			event_monitor_running = false;
 		}
 #else
 		if (data->ipv4_assigned
@@ -1023,7 +1030,8 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		    || data->ipv6_assigned
 #endif
 		) {
-			k_sleep(K_SECONDS(2));
+			event_monitor_running = false;
+			break;
 		}
 #endif
 
