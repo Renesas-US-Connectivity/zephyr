@@ -54,6 +54,10 @@ struct erpc_wifi_data {
 	struct k_sem sem_if_ready;
 
 	char fw_version_driver[ERPC_WIFI_DRV_FW_VER_LEN_MAX];
+<<<<<<< HEAD
+=======
+	bool wifi_params_read;
+>>>>>>> d563877f862 (Integrated IPV6 implementatoin along with patch applied code & update erpc commit hash in yml file)
 	bool ipv4_assigned;
 #if defined(CONFIG_NET_IPV6)
 	bool ipv6_assigned;

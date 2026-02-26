@@ -48,7 +48,7 @@ static struct k_thread erpc_wifi_server_thread_data;
 
 K_KERNEL_STACK_DEFINE(erpc_wifi_workq_stack, CONFIG_WIFI_ERPC_WIFI_WORKQ_STACK_SIZE);
 
-#define EVENT_MONITOR_STACK_SIZE 2048
+#define EVENT_MONITOR_STACK_SIZE 4096
 K_THREAD_STACK_DEFINE(event_monitor_stack, EVENT_MONITOR_STACK_SIZE);
 
 // Thread control structure
@@ -877,7 +877,14 @@ int erpc_wifi_mgmt_get_version(const struct device *dev, struct wifi_version *pa
 {
 	struct erpc_wifi_data *data = dev->data;
 
+<<<<<<< HEAD
 	fw_version_get_driver_ver(data->fw_version_driver, sizeof(data->fw_version_driver));
+=======
+	// fw_version_get_supp_ver(params->supplicant_version, WIFI_VERSION_MAC_STR_LEN);
+
+	fw_version_get_driver_ver(data->fw_version_driver,
+			 sizeof(data->fw_version_driver));
+>>>>>>> d563877f862 (Integrated IPV6 implementatoin along with patch applied code & update erpc commit hash in yml file)
 
 	params->drv_version = data->fw_version_driver;
 	params->fw_version = NULL;
@@ -955,21 +962,46 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 		return;
 	}
 
+<<<<<<< HEAD
 	if (config->xIPAddress.xType == eWiFiIPAddressTypeV4) {
 		struct in_addr ip, netmask, gateway;
 		char ip_str[16];
 		char netmask_str[16];
 		char gateway_str[16];
+=======
+#ifdef CONFIG_DNS_RESOLVER
+	static const char *dns_servers[CONFIG_DNS_RESOLVER_MAX_SERVERS];
+#endif
+
+	if (config->xIPAddress.xType == eWiFiIPAddressTypeV4) {
+		struct in_addr ip, netmask, gateway;
+		struct in_addr dns1, dns2;
+		char ip_str[16];
+		char netmask_str[16];
+		char gateway_str[16];
+		char dns1_str[16];
+		char dns2_str[16];
+>>>>>>> d563877f862 (Integrated IPV6 implementatoin along with patch applied code & update erpc commit hash in yml file)
 
 		// Extract IPv4 address from WIFIIPAddress_t structure
 		uint32_t ip_raw = config->xIPAddress.ulAddress[0];
 		uint32_t netmask_raw = config->xNetMask.ulAddress[0];
 		uint32_t gateway_raw = config->xGateway.ulAddress[0];
+<<<<<<< HEAD
+=======
+		uint32_t ip_dns1_raw = config->xDns1.ulAddress[0];
+		uint32_t ip_dns2_raw = config->xDns2.ulAddress[0];
+>>>>>>> d563877f862 (Integrated IPV6 implementatoin along with patch applied code & update erpc commit hash in yml file)
 
 		// Convert from network byte order to individual bytes
 		uint8_t *ip_bytes = (uint8_t *)&ip_raw;
 		uint8_t *netmask_bytes = (uint8_t *)&netmask_raw;
 		uint8_t *gateway_bytes = (uint8_t *)&gateway_raw;
+<<<<<<< HEAD
+=======
+		uint8_t *dns1_bytes = (uint8_t *)&ip_dns1_raw;
+		uint8_t *dns2_bytes = (uint8_t *)&ip_dns2_raw;
+>>>>>>> d563877f862 (Integrated IPV6 implementatoin along with patch applied code & update erpc commit hash in yml file)
 
 		// Create IP strings for net_addr_pton
 		snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", ip_bytes[0], ip_bytes[1],
@@ -978,11 +1010,19 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 			 netmask_bytes[1], netmask_bytes[2], netmask_bytes[3]);
 		snprintf(gateway_str, sizeof(gateway_str), "%d.%d.%d.%d", gateway_bytes[0],
 			 gateway_bytes[1], gateway_bytes[2], gateway_bytes[3]);
+<<<<<<< HEAD
+=======
+		snprintf(dns1_str, sizeof(dns1_str), "%d.%d.%d.%d", dns1_bytes[0], dns1_bytes[1],
+			 dns1_bytes[2], dns1_bytes[3]);
+		snprintf(dns2_str, sizeof(dns2_str), "%d.%d.%d.%d", dns2_bytes[0], dns2_bytes[1],
+			 dns2_bytes[2], dns2_bytes[3]);
+>>>>>>> d563877f862 (Integrated IPV6 implementatoin along with patch applied code & update erpc commit hash in yml file)
 
 		// Convert to in_addr structures
 		net_addr_pton(AF_INET, ip_str, &ip);
 		net_addr_pton(AF_INET, netmask_str, &netmask);
 		net_addr_pton(AF_INET, gateway_str, &gateway);
+<<<<<<< HEAD
 
 		// Clear existing addresses and add new one
 #if defined(CONFIG_NET_IPV4)
@@ -1004,6 +1044,38 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 			LOG_ERR("Failed to add IPv4 address to interface");
 		}
 #endif
+=======
+		net_addr_pton(AF_INET, dns1_str, &dns1);
+		net_addr_pton(AF_INET, dns2_str, &dns2);
+
+#ifdef CONFIG_DNS_RESOLVER
+		dns_servers[0] = dns1_str;
+		int ret = dns_resolve_reconfigure(dns_resolve_get_default(), dns_servers, NULL,
+						  DNS_SOURCE_DHCPV4);
+		LOG_INF("DNS resolve reconfigure: %d (%s)", ret, strerror(-ret));
+#endif
+
+		// Clear existing addresses and add new one
+#if defined(CONFIG_NET_IPV4)
+		net_if_ipv4_addr_rm(iface, &ip);
+		struct net_if_addr *ifaddr = net_if_ipv4_addr_add(iface, &ip, NET_ADDR_DHCP, 0);
+
+		if (ifaddr) {
+			net_if_ipv4_set_netmask_by_addr(iface, &ip, &netmask);
+			net_if_ipv4_set_gw(iface, &gateway);
+
+			LOG_INF("DHCP IPv4 applied: %s", ip_str);
+			LOG_INF("Netmask: %s, Gateway: %s", netmask_str, gateway_str);
+
+			erpc_wifi_driver_data.ipv4_assigned = true;
+
+			// Notify the network management system about IPv4 assignment
+			net_mgmt_event_notify(NET_EVENT_IPV4_DHCP_BOUND, iface);
+		} else {
+			LOG_ERR("Failed to add IPv4 address to interface");
+		}
+#endif
+>>>>>>> d563877f862 (Integrated IPV6 implementatoin along with patch applied code & update erpc commit hash in yml file)
 #if defined(CONFIG_NET_IPV6)
 	} else if (config->xIPAddress.xType == eWiFiIPAddressTypeV6) {
 		struct in6_addr ip6;
@@ -1015,10 +1087,23 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 		net_addr_ntop(AF_INET6, &ip6, ip6_str, sizeof(ip6_str));
 
 		// In Zephyr, we usually just add the address.
+<<<<<<< HEAD
 		if (net_if_ipv6_addr_add(iface, &ip6, NET_ADDR_MANUAL, 0)) {
 			LOG_INF("IPv6 address applied: %s", ip6_str);
 
 			erpc_wifi_driver_data.ipv6_assigned = true;
+=======
+		// net_if_ipv6_addr_add automatically handles address type
+		if (net_if_ipv6_addr_add(iface, &ip6, NET_ADDR_MANUAL, 0)) {
+			// Ensure interface is up
+			net_if_up(iface);
+			if (net_ipv6_is_ll_addr(&ip6)) {
+				LOG_INF("Link-Local IPv6 address applied: %s", ip6_str);
+			} else {
+				LOG_INF("Global IPv6 address applied: %s", ip6_str);
+				erpc_wifi_driver_data.ipv6_assigned = true;
+			}
+>>>>>>> d563877f862 (Integrated IPV6 implementatoin along with patch applied code & update erpc commit hash in yml file)
 
 			// Notify the network management system about IPv6 assignment
 			net_mgmt_event_notify(NET_EVENT_IPV6_ADDR_ADD, iface);
@@ -1028,6 +1113,10 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 #endif
 	}
 
+<<<<<<< HEAD
+=======
+ensure_up:
+>>>>>>> d563877f862 (Integrated IPV6 implementatoin along with patch applied code & update erpc commit hash in yml file)
 	// Ensure interface is up
 	net_if_up(iface);
 	LOG_INF("IP configuration applied to interface");
