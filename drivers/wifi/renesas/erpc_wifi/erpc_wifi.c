@@ -50,7 +50,7 @@ static struct k_thread erpc_wifi_server_thread_data;
 K_KERNEL_STACK_DEFINE(erpc_wifi_workq_stack,
 		      CONFIG_WIFI_ERPC_WIFI_WORKQ_STACK_SIZE);
 
-#define EVENT_MONITOR_STACK_SIZE 2048
+#define EVENT_MONITOR_STACK_SIZE 4096
 K_THREAD_STACK_DEFINE(event_monitor_stack, EVENT_MONITOR_STACK_SIZE);
 
 // Thread control structure
@@ -990,6 +990,8 @@ int erpc_wifi_mgmt_get_version(const struct device *dev,
 {
 	struct erpc_wifi_data *data = dev->data;
 
+	// fw_version_get_supp_ver(params->supplicant_version, WIFI_VERSION_MAC_STR_LEN);
+
 	fw_version_get_driver_ver(data->fw_version_driver,
 			 sizeof(data->fw_version_driver));
 
@@ -1070,71 +1072,117 @@ static void erpc_wifi_client_error_handler(erpc_status_t err, uint32_t func_id)
 
 static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfiguration_t *config)
 {
-	if (!iface) return;
+	if (!iface) {
+		return;
+	}
+
 #ifdef CONFIG_DNS_RESOLVER
 	static const char *dns_servers[CONFIG_DNS_RESOLVER_MAX_SERVERS];
 #endif
 
-	struct in_addr ip, netmask, gateway;
-	struct in_addr dns1, dns2;
-	char ip_str[16];
-	char netmask_str[16];
-	char gateway_str[16];
-	char dns1_str[16];
-	char dns2_str[16];
-	// Extract IPv4 address from WIFIIPAddress_t structure
-	uint32_t ip_raw = config->xIPAddress.ulAddress[0];
-	uint32_t netmask_raw = config->xNetMask.ulAddress[0];
-	uint32_t gateway_raw = config->xGateway.ulAddress[0];
-	uint32_t ip_dns1_raw = config->xDns1.ulAddress[0];
-	uint32_t ip_dns2_raw = config->xDns2.ulAddress[0];
+	if (config->xIPAddress.xType == eWiFiIPAddressTypeV4) {
+		struct in_addr ip, netmask, gateway;
+		struct in_addr dns1, dns2;
+		char ip_str[16];
+		char netmask_str[16];
+		char gateway_str[16];
+		char dns1_str[16];
+		char dns2_str[16];
 
-	// Convert from network byte order to individual bytes
-	uint8_t *ip_bytes = (uint8_t *)&ip_raw;
-	uint8_t *netmask_bytes = (uint8_t *)&netmask_raw;
-	uint8_t *gateway_bytes = (uint8_t *)&gateway_raw;
-	uint8_t *dns1_bytes = (uint8_t *)&ip_dns1_raw;
-	uint8_t *dns2_bytes = (uint8_t *)&ip_dns2_raw;
-	// Create IP strings for net_addr_pton
-	snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d",
-		ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
-	snprintf(netmask_str, sizeof(netmask_str), "%d.%d.%d.%d",
-		netmask_bytes[0], netmask_bytes[1], netmask_bytes[2], netmask_bytes[3]);
-	snprintf(gateway_str, sizeof(gateway_str), "%d.%d.%d.%d",
-		gateway_bytes[0], gateway_bytes[1], gateway_bytes[2], gateway_bytes[3]);
-	snprintf(dns1_str, sizeof(dns1_str), "%d.%d.%d.%d",
-		dns1_bytes[0], dns1_bytes[1], dns1_bytes[2], dns1_bytes[3]);
-	snprintf(dns2_str, sizeof(dns2_str), "%d.%d.%d.%d",
-		dns2_bytes[0], dns2_bytes[1], dns2_bytes[2], dns2_bytes[3]);
-	// Convert to in_addr structures
-	net_addr_pton(AF_INET, ip_str, &ip);
-	net_addr_pton(AF_INET, netmask_str, &netmask);
-	net_addr_pton(AF_INET, gateway_str, &gateway);
-	net_addr_pton(AF_INET, dns1_str, &dns1);
-	net_addr_pton(AF_INET, dns2_str, &dns2);
+		// Extract IPv4 address from WIFIIPAddress_t structure
+		uint32_t ip_raw = config->xIPAddress.ulAddress[0];
+		uint32_t netmask_raw = config->xNetMask.ulAddress[0];
+		uint32_t gateway_raw = config->xGateway.ulAddress[0];
+		uint32_t ip_dns1_raw = config->xDns1.ulAddress[0];
+		uint32_t ip_dns2_raw = config->xDns2.ulAddress[0];
+
+		// Convert from network byte order to individual bytes
+		uint8_t *ip_bytes = (uint8_t *)&ip_raw;
+		uint8_t *netmask_bytes = (uint8_t *)&netmask_raw;
+		uint8_t *gateway_bytes = (uint8_t *)&gateway_raw;
+		uint8_t *dns1_bytes = (uint8_t *)&ip_dns1_raw;
+		uint8_t *dns2_bytes = (uint8_t *)&ip_dns2_raw;
+
+		// Create IP strings for net_addr_pton
+		snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", ip_bytes[0], ip_bytes[1],
+			 ip_bytes[2], ip_bytes[3]);
+		snprintf(netmask_str, sizeof(netmask_str), "%d.%d.%d.%d", netmask_bytes[0],
+			 netmask_bytes[1], netmask_bytes[2], netmask_bytes[3]);
+		snprintf(gateway_str, sizeof(gateway_str), "%d.%d.%d.%d", gateway_bytes[0],
+			 gateway_bytes[1], gateway_bytes[2], gateway_bytes[3]);
+		snprintf(dns1_str, sizeof(dns1_str), "%d.%d.%d.%d", dns1_bytes[0], dns1_bytes[1],
+			 dns1_bytes[2], dns1_bytes[3]);
+		snprintf(dns2_str, sizeof(dns2_str), "%d.%d.%d.%d", dns2_bytes[0], dns2_bytes[1],
+			 dns2_bytes[2], dns2_bytes[3]);
+
+		// Convert to in_addr structures
+		net_addr_pton(AF_INET, ip_str, &ip);
+		net_addr_pton(AF_INET, netmask_str, &netmask);
+		net_addr_pton(AF_INET, gateway_str, &gateway);
+		net_addr_pton(AF_INET, dns1_str, &dns1);
+		net_addr_pton(AF_INET, dns2_str, &dns2);
 
 #ifdef CONFIG_DNS_RESOLVER
-	dns_servers[0] = dns1_str;
-	int ret = dns_resolve_reconfigure(dns_resolve_get_default(), dns_servers, NULL, DNS_SOURCE_DHCPV4);
-	LOG_INF("DNS resolve reconfigure: %d (%s)", ret, strerror(-ret));
-#endif	
-#ifdef CONFIG_NET_IPV4
-	// Clear existing addresses and add new one
-	net_if_ipv4_addr_rm(iface, &ip);
-	struct net_if_addr *ifaddr = net_if_ipv4_addr_add(iface, &ip, NET_ADDR_DHCP, 0);
-
-	if (ifaddr) {
-		net_if_ipv4_set_netmask_by_addr(iface, &ip, &netmask);
-		net_if_ipv4_set_gw(iface, &gateway);
-
-		// CRITICAL: Notify the network management system about IP assignment
-		net_mgmt_event_notify(NET_EVENT_IPV4_DHCP_BOUND, iface);
-
-		LOG_INF("DHCP events notified to application");
-	} else {
-		LOG_ERR("Failed to add IP address to interface");
-	}
+		dns_servers[0] = dns1_str;
+		int ret = dns_resolve_reconfigure(dns_resolve_get_default(), dns_servers, NULL,
+						  DNS_SOURCE_DHCPV4);
+		LOG_INF("DNS resolve reconfigure: %d (%s)", ret, strerror(-ret));
 #endif
+
+		// Clear existing addresses and add new one
+#if defined(CONFIG_NET_IPV4)
+		net_if_ipv4_addr_rm(iface, &ip);
+		struct net_if_addr *ifaddr = net_if_ipv4_addr_add(iface, &ip, NET_ADDR_DHCP, 0);
+
+		if (ifaddr) {
+			net_if_ipv4_set_netmask_by_addr(iface, &ip, &netmask);
+			net_if_ipv4_set_gw(iface, &gateway);
+
+			LOG_INF("DHCP IPv4 applied: %s", ip_str);
+			LOG_INF("Netmask: %s, Gateway: %s", netmask_str, gateway_str);
+
+			erpc_wifi_driver_data.ipv4_assigned = true;
+
+			// Notify the network management system about IPv4 assignment
+			net_mgmt_event_notify(NET_EVENT_IPV4_DHCP_BOUND, iface);
+		} else {
+			LOG_ERR("Failed to add IPv4 address to interface");
+		}
+#endif
+#if defined(CONFIG_NET_IPV6)
+	} else if (config->xIPAddress.xType == eWiFiIPAddressTypeV6) {
+		struct in6_addr ip6;
+		char ip6_str[INET6_ADDRSTRLEN];
+
+		// Extract IPv6 address (4 words)
+		memcpy(&ip6, config->xIPAddress.ulAddress, sizeof(struct in6_addr));
+
+		net_addr_ntop(AF_INET6, &ip6, ip6_str, sizeof(ip6_str));
+
+		// In Zephyr, we usually just add the address.
+		// net_if_ipv6_addr_add automatically handles address type
+		if (net_if_ipv6_addr_add(iface, &ip6, NET_ADDR_MANUAL, 0)) {
+			// Ensure interface is up
+			net_if_up(iface);
+			if (net_ipv6_is_ll_addr(&ip6)) {
+				LOG_INF("Link-Local IPv6 address applied: %s", ip6_str);
+			} else {
+				LOG_INF("Global IPv6 address applied: %s", ip6_str);
+				erpc_wifi_driver_data.ipv6_assigned = true;
+			}
+
+			// Notify the network management system about IPv6 assignment
+			net_mgmt_event_notify(NET_EVENT_IPV6_ADDR_ADD, iface);
+		} else {
+			LOG_ERR("Failed to apply IPv6 address: %s", ip6_str);
+		}
+#endif
+	}
+
+ensure_up:
+	// Ensure interface is up
+	net_if_up(iface);
+	LOG_INF("IP configuration applied to interface");
 }
 
 #ifdef CONFIG_ERPC_TRANSPORT_UART
@@ -1171,45 +1219,43 @@ void ra_erpc_server_event_handler(const ra_erp_server_event_t * event)
 	struct in_addr netmask;
 
 	switch (event->event_id) {
-		case eDeviceReset:
-		{
-			LOG_DBG("eDeviceReset");
+	case eDeviceReset: {
+		LOG_DBG("eDeviceReset");
 
-			if (data->driver_state == ERPC_WIFI_DRIVER_INITIALIZED) {
-				LOG_WRN("Server reset detected during runtime, triggering recovery");
-				k_work_submit_to_queue(&data->workq, &data->reinit_work);
-			} else {
-				data->reset_msg_received = true;
-			}
-			break;
+		if (data->driver_state == ERPC_WIFI_DRIVER_INITIALIZED) {
+			LOG_WRN("Server reset detected during runtime, triggering recovery");
+			k_work_submit_to_queue(&data->workq, &data->reinit_work);
+		} else {
+			data->reset_msg_received = true;
 		}
-		case eNetworkInterfaceIPAssigned:
-		{
-			LOG_DBG("eNetworkInterfaceIPAssigned");
+		break;
+	}
+	case eNetworkInterfaceIPAssigned: {
+		LOG_DBG("eNetworkInterfaceIPAssigned");
 
-			ip_addr.s_addr = event->event_data.xConfig.xIPAddress.ulAddress[0];
-			gw_addr.s_addr = event->event_data.xConfig.xGateway.ulAddress[0];
-			netmask.s_addr = event->event_data.xConfig.xNetMask.ulAddress[0];
+		ip_addr.s_addr = event->event_data.xConfig.xIPAddress.ulAddress[0];
+		gw_addr.s_addr = event->event_data.xConfig.xGateway.ulAddress[0];
+		netmask.s_addr = event->event_data.xConfig.xNetMask.ulAddress[0];
+
 #ifdef CONFIG_NET_IPV4
-			net_if_ipv4_addr_add(data->net_iface, &ip_addr, NET_ADDR_DHCP, 0);
-			net_if_ipv4_set_gw(data->net_iface, &gw_addr);
-			net_if_ipv4_set_netmask_by_addr(data->net_iface, &ip_addr, &netmask);
+		net_if_ipv4_addr_add(data->net_iface, &ip_addr, NET_ADDR_DHCP, 0);
+		net_if_ipv4_set_gw(data->net_iface, &gw_addr);
+		net_if_ipv4_set_netmask_by_addr(data->net_iface, &ip_addr, &netmask);
 #endif
-			break;
-		}
-		case eNetworkInterfaceDown:
-		{
-			LOG_DBG("eNetworkInterfaceDown");
+		break;
+	}
+	case eNetworkInterfaceDown: {
+		LOG_DBG("eNetworkInterfaceDown");
 
-			data->state = WIFI_STATE_DISCONNECTED;
+		data->state = WIFI_STATE_DISCONNECTED;
 
-			wifi_mgmt_raise_disconnect_result_event(data->net_iface, 0);
-			net_if_dormant_on(data->net_iface);
-			break;
-		}
-		default:
-			LOG_DBG("event_id: %d", event->event_id);
-			break;
+		wifi_mgmt_raise_disconnect_result_event(data->net_iface, 0);
+		net_if_dormant_on(data->net_iface);
+		break;
+	}
+	default:
+		LOG_DBG("event_id: %d", event->event_id);
+		break;
 	}
 }
 
@@ -1276,37 +1322,31 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		switch (event.event_id) {
 		case eNetworkInterfaceUp:
 			LOG_INF("Server: Network interface up");
-			// net_if_set_up(iface);
 			net_mgmt_event_notify(NET_EVENT_IF_UP, iface);
-			/* If a connection was in progress, translate this into a successful connect on the host side. */
-			// if (data->state == WIFI_STATE_ASSOCIATING ||
-			//     data->state == WIFI_STATE_AUTHENTICATING ||
-			//     data->state == WIFI_STATE_INACTIVE) {
-			// 	data->state = WIFI_STATE_COMPLETED;
-			// 	net_if_dormant_off(iface);
-			// 	wifi_mgmt_raise_connect_result_event(iface, WIFI_STATUS_CONN_SUCCESS);
-			// }
 			break;
 
 		case eNetworkInterfaceDown:
 			LOG_INF("Server: Network interface down");
-			// net_if_set_down(iface);
 			net_mgmt_event_notify(NET_EVENT_IF_DOWN, iface);
-			// erpc_wifi_clear_ip();
+			data->ipv4_assigned = false;
+#if defined(CONFIG_NET_IPV6)
+			data->ipv6_assigned = false;
+#endif
 			break;
 
 		case eNetworkInterfaceIPAssigned:
 			LOG_INF("Server: IP assigned - applying IP");
 			erpc_wifi_apply_dhcp_lease(iface, &event.event_data.xConfig);
-			event_monitor_running = false;
 			break;
 
 		default:
-			LOG_INF("%s: Unknown event: %d", __func__, event.event_id);
 			break;
 		}
 
-		k_sleep(K_SECONDS(3));
+		/* Small sleep to prevent busy-polling in case erpc_get_server_event is non-blocking
+		 * and no events are pending.
+		 */
+		k_msleep(200);
 	}
 }
 #endif
@@ -1314,12 +1354,15 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 // Function to start the event monitor thread
 int erpc_wifi_start_event_monitor(struct erpc_wifi_data *data)
 {
-	printk("Starting event monitor thread...\n");
 	if (event_monitor_running) {
 		LOG_WRN("Event monitor already running");
 		return -EALREADY;
 	}
 
+	data->ipv4_assigned = false;
+#if defined(CONFIG_NET_IPV6)
+	data->ipv6_assigned = false;
+#endif
 	event_monitor_running = true;
 
 	// Create and start the thread
