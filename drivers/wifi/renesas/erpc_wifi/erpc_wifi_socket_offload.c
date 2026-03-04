@@ -206,7 +206,7 @@ struct erpc_wifi_socket {
 
 	struct k_sem read_sem;
 	struct k_fifo fifo;
-	;
+
 	struct k_work socket_connect_work;
 	struct ra_erpc_sockaddr *addr_erpc_wifi;
 
@@ -217,11 +217,13 @@ struct erpc_wifi_socket {
 
 	char addr_str[NET_IPV4_ADDR_LEN];
 	int port;
-
-	struct k_mutex *lock;    /* for ZFD_IOCTL_SET_LOCK */
-	uint32_t flags;          /* O_NONBLOCK etc */
-	uint16_t bound_port;     // Local port from bind() (host order)
-	bool tcp_dpm_filter_set; // true if TCP DPM wake filter installed
+ 
+	struct k_mutex *lock;              /* for ZFD_IOCTL_SET_LOCK */
+    uint32_t flags;              /* O_NONBLOCK etc */
+	uint16_t bound_port;   // Local port from bind() (host order)
+    bool tcp_dpm_filter_set; // true if TCP DPM wake filter installed
+	struct sockaddr addr;
+	socklen_t addrlen;
 };
 
 static struct erpc_wifi_socket sockets[ERPC_WIFI_MAX_SOCKETS];
@@ -552,7 +554,7 @@ static int erpc_wifi_socket_connect(void *obj, const struct sockaddr *addr, sock
 	// addr->sa_family = AF_INET6;
 	if (addr->sa_family == AF_INET) {
 		char addr_str[INET_ADDRSTRLEN];
-		struct sockaddr_in *s_addr = net_sin(addr);
+		struct sockaddr_in * s_addr = net_sin(addr);
 
 		net_addr_ntop(addr->sa_family, &s_addr->sin_addr, addr_str, sizeof(addr_str));
 		LOG_DBG("sin: addr: %s port: %d", addr_str, ntohs(s_addr->sin_port));
@@ -575,6 +577,11 @@ static int erpc_wifi_socket_connect(void *obj, const struct sockaddr *addr, sock
 	ret = ra6w1_connect(sock->fd, &addr_erpc_wifi, addr_erpc_wifi.sa_len);
 	erpc_wifi_unlock();
 	LOG_DBG("ra6w1_connect: %d", ret);
+
+	if (ret == 0) {
+		memcpy(&sock->addr, addr, sizeof(sock->addr));
+		sock->addrlen = addrlen;
+	}
 
 	return ret;
 }
@@ -682,12 +689,11 @@ static ssize_t erpc_wifi_socket_sendto(void *obj, const void *buf, size_t len, i
 		if (ret) {
 			return ret;
 		}
+		
 		erpc_wifi_lock();
-		ret = ra6w1_sendto(sock->fd, buf, len, flags, &addr_erpc_wifi,
-				   addr_erpc_wifi.sa_len);
+		ret = ra6w1_sendto(sock->fd, buf, len, flags, &addr_erpc_wifi, addr_erpc_wifi.sa_len);
 		erpc_wifi_unlock();
-		LOG_DBG("ra6w1_sendto: %d", ret);
-
+		
 		LOG_DBG("ra6w1_sendto: %d", ret);
 
 		if (dest_addr) {
@@ -699,7 +705,7 @@ static ssize_t erpc_wifi_socket_sendto(void *obj, const void *buf, size_t len, i
 		}
 	} else {
 		erpc_wifi_lock();
-		ret = ra6w1_send(sock->fd, buf, len, flags);
+    	ret = ra6w1_send(sock->fd, buf, len, flags);
 		erpc_wifi_unlock();
 
 		LOG_DBG("ra6w1_send: %d", ret);
@@ -728,7 +734,102 @@ ssize_t erpc_wifi_socket_sendmsg(void *obj, const struct msghdr *msg, int flags)
 		return len;
 	}
 
-	return -ENODATA;
+static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, int flags,
+                                        struct sockaddr *src_addr, socklen_t *addrlen)
+{
+    int ret = -1;
+    struct erpc_wifi_socket *sock = (struct erpc_wifi_socket *)obj;
+
+    if (!sock) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    LOG_DBG("fd: %d", sock->fd);
+    LOG_DBG("max_len: %d", (int)max_len);
+    LOG_DBG("src_addr: %x", (uint32_t)src_addr);
+    LOG_DBG("addrlen: %x", (uint32_t)addrlen);
+
+    const bool nonblock = ((flags & ZSOCK_MSG_DONTWAIT) != 0);
+    const int nb_flags = flags | ZSOCK_MSG_DONTWAIT;
+    int w = wait_ra_awake(ERPC_PMGR_JOB_ID_RECV);
+    if (w != 0) {
+        LOG_WRN("wait_ra_awake failed in %s = %d", __func__, w);
+        errno = EAGAIN;
+        return -1;
+    }
+    /* RA6W1 recv path already sets dpm_rcv_ready and job name (port) is set in bind/connect. */
+
+    while (1) {
+        uint32_t ev = get_socket_events(sock->fd);
+        if (ev & SOCKET_EVENT_ERR) {
+            errno = ECONNRESET;
+            ret = -1;
+            break;
+        }
+        if (ev & SOCKET_EVENT_CLOSE) {
+            errno = ENOTCONN;
+            ret = -1;
+            break;
+        }
+        if ((ev & SOCKET_EVENT_RX) == 0) {
+            if (nonblock) {
+                errno = EAGAIN;
+                ret = -1;
+                break;
+            }
+            if (wait_remote_rx_ready(sock, SYS_FOREVER_MS) != 0) {
+                errno = EAGAIN;
+                ret = -1;
+                break;
+            }
+            continue;
+        }
+
+        if (src_addr) {
+			erpc_wifi_lock();
+            ret = ra6w1_recvfrom(sock->fd, buf, max_len, nb_flags,
+                                 (ra_erpc_sockaddr *)src_addr, addrlen);
+			erpc_wifi_unlock();
+
+            if (ret >= 0) {
+                // Address family translation handled inside erpc_wifi_socket_recvfrom calls? Or simply hardcoding for now.
+                src_addr->sa_family = AF_INET;
+            }
+        } else {
+			erpc_wifi_lock();
+            ret = ra6w1_recv(sock->fd, buf, max_len, nb_flags);
+			erpc_wifi_unlock();
+        }
+
+        if (ret >= 0) {
+            break;
+        }
+        ev = get_socket_events(sock->fd);
+
+        if (ev & SOCKET_EVENT_ERR) {
+            errno = ECONNRESET;
+            break;
+        } else if (ev & SOCKET_EVENT_CLOSE) {
+            errno = ENOTCONN;
+            break;
+        } else {
+            errno = EAGAIN;
+        }
+
+        if (nonblock) {
+            break;
+        }
+        if (wait_remote_rx_ready(sock, SYS_FOREVER_MS) != 0) {
+            errno = EAGAIN;
+            ret = -1;
+            break;
+        }
+    }
+    (void)ra6w1_pmgr_dpm_wakeup_done(ERPC_PMGR_JOB_ID_RECV);
+
+    LOG_DBG("erpc_wifi_socket_recvfrom return=%d errno=%d", ret, errno);
+    return ret;
 }
 
 static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, int flags,
@@ -887,6 +988,12 @@ static int erpc_wifi_socket_close(void *obj)
 
 	LOG_DBG("erpc_wifi_socket_close");
 
+	if (sock->tcp_dpm_filter_set && sock->bound_port != 0) {
+		(void)ra6w1_wifi_dpm_tcp_port_delete(sock->bound_port);
+		sock->tcp_dpm_filter_set = false;
+		sock->bound_port = 0;
+	}
+
 	erpc_wifi_socket_free(sock->fd);
 	erpc_wifi_lock();
 	ret = ra6w1_close(sock->fd);
@@ -906,90 +1013,103 @@ static struct erpc_wifi_socket *find_socket_by_fd(int zfd)
 
 	return NULL;
 }
-
 static int erpc_wifi_socket_poll_offload(struct zvfs_pollfd *fds, int nfds, int timeout)
 {
-	struct k_poll_event events[ERPC_WIFI_MAX_SOCKETS];
-	struct erpc_wifi_socket *tracked_socks[ERPC_WIFI_MAX_SOCKETS];
-	int tracked_count = 0;
-	int ready_count = 0;
+	int64_t start_time = k_uptime_get();
+	bool forever = (timeout == SYS_FOREVER_MS);
+	int fd_found = 0;
+	LOG_INF("pool start nfds: %d, timeout: %d", nfds, timeout);
 
-	LOG_INF("poll offload start nfds=%d timeout=%d", nfds, timeout);
-
-	ensure_poll_task_started();
-
+	/* Make sure to reset revents */
 	for (int i = 0; i < nfds; i++) {
-		fds[i].revents = 0;
-		struct erpc_wifi_socket *sock = find_socket_by_fd(fds[i].fd);
-
-		if (!sock) {
-			fds[i].revents = ZVFS_POLLNVAL;
-			ready_count++;
-			continue;
-		}
-
-		if (tracked_count < ERPC_WIFI_MAX_SOCKETS) {
-			k_poll_signal_reset(&sock->poll_signal);
-			sock->poll_events = fds[i].events;
-			sock->triggered_events = 0;
-			sock->waiting = true;
-
-			k_poll_event_init(&events[tracked_count], K_POLL_TYPE_SIGNAL,
-					  K_POLL_MODE_NOTIFY_ONLY, &sock->poll_signal);
-			tracked_socks[tracked_count] = sock;
-			tracked_count++;
-		}
+		int retry = 0;
+		/* Search for valid socket */
+		do {
+			struct erpc_wifi_socket *sock = find_socket_by_fd(fds[i].fd);
+			if (sock) {
+				fd_found++;
+				break;
+			}
+			k_msleep(10); // Wait a short time before checking again
+		} while (++retry < 4);
+		LOG_DBG("fd: %d found: %d, ret: %d", fds[i].fd, fd_found, retry);
 	}
 
-	if (tracked_count > 0) {
-		k_sem_give(&poll_task_sem);
+	if (!fd_found) {
+		LOG_ERR("No valid socket fd found");
+		return -1;
 	}
 
-	if (ready_count > 0 || timeout == 0) {
-		goto update_revents;
-	}
+	do {
+		int ret = 0;
+		int found_inval = 0;
 
-	if (tracked_count > 0) {
-		int ret = k_poll(events, tracked_count, K_MSEC(timeout));
-
-		if (ret != 0 && ret != -EAGAIN) {
-			LOG_ERR("k_poll failed: %d", ret);
-		}
-	}
-
-update_revents:
-	for (int i = 0; i < nfds; i++) {
-		if (fds[i].revents == ZVFS_POLLNVAL) {
-			continue;
+		if (wait_ra_awake(ERPC_PMGR_JOB_ID_RECV) != 0) {
+			goto check_ra_awake_tout;
 		}
 
-		struct erpc_wifi_socket *sock = find_socket_by_fd(fds[i].fd);
+		// Check all sockets again
+		for (int i = 0; i < nfds; i++) {
+			uint16_t events = 0;
+			fds[i].revents = 0;
+			struct erpc_wifi_socket *sock = find_socket_by_fd(fds[i].fd);
 
-		if (sock) {
-			sock->waiting = false;
-			uint32_t ev = (uint32_t)sock->triggered_events;
+			if (!sock) {
+				/* TODO: Investigate why that helps */
+				//fds[i].revents = ZVFS_POLLNVAL;
+				found_inval++;
+				k_msleep(10); // Wait a short time before checking again
+				continue;
+			}
 
-			if ((ev & SOCKET_EVENT_RX) && (fds[i].events & ZVFS_POLLIN)) {
+			events = get_socket_events(sock->fd);
+			if ((events & SOCKET_EVENT_RX) && (fds[i].events & ZVFS_POLLIN)) {
 				fds[i].revents |= ZVFS_POLLIN;
 			}
-			if ((ev & SOCKET_EVENT_TX) && (fds[i].events & ZVFS_POLLOUT)) {
+			if ((events & SOCKET_EVENT_TX) && (fds[i].events & ZVFS_POLLOUT)) {
 				fds[i].revents |= ZVFS_POLLOUT;
 			}
-			if ((ev & SOCKET_EVENT_ERR) && (fds[i].events & ZVFS_POLLERR)) {
+			if ((events & SOCKET_EVENT_ERR) && (fds[i].events & ZVFS_POLLERR)) {
 				fds[i].revents |= ZVFS_POLLERR;
 			}
-			if ((ev & SOCKET_EVENT_CLOSE) && (fds[i].events & ZVFS_POLLHUP)) {
+			if ((events & SOCKET_EVENT_CLOSE) && (fds[i].events & ZVFS_POLLHUP)) {
 				fds[i].revents |= ZVFS_POLLHUP;
 			}
-
 			if (fds[i].revents != 0) {
-				ready_count++;
+				ret++;
+				LOG_INF("pool nfds: %d, ret: %d", nfds, ret);
 			}
 		}
-	}
 
-	LOG_INF("poll offload done ready_count=%d", ready_count);
-	return ready_count;
+		if (found_inval == nfds) {
+			/* Indicate that all file descriptors are invalid */
+			for (int i = 0; i < nfds; i++) {
+				fds[i].revents = ZVFS_POLLNVAL;
+			}
+
+			return found_inval;
+		}
+
+		if (ret > 0) {
+			LOG_INF("pool ended nfds: %d, ret: %d, found_inval: %d", nfds, ret, found_inval);
+			return ret + found_inval;
+		}
+
+check_ra_awake_tout:
+		// Check if timeout expired (unless forever)
+		if (!forever) {
+			int64_t elapsed = k_uptime_get() - start_time;
+			if (elapsed >= timeout) {
+				LOG_INF("pool timed out: elapsed: %lld", elapsed);
+				return 0; // Timeout
+			}
+		}
+
+		// Wait a short time before checking again
+		k_msleep(1);
+	} while (true);
+
+	return -1;
 }
 
 static int erpc_wifi_socket_poll_update(struct zvfs_pollfd *pfd, struct k_poll_event **pev)
@@ -1028,8 +1148,10 @@ static int erpc_wifi_socket_poll_update(struct zvfs_pollfd *pfd, struct k_poll_e
 
 static int erpc_wifi_socket_ioctl(void *obj, unsigned int request, va_list args)
 {
-	struct erpc_wifi_socket *sock = obj;
-	int ret;
+    struct erpc_wifi_socket *sock = obj;
+    int ret;
+
+	LOG_DBG("erpc_wifi_socket_ioctl: request=%u", request);
 
 	switch (request) {
 	case F_SETFL:
@@ -1081,16 +1203,29 @@ static int erpc_wifi_socket_ioctl(void *obj, unsigned int request, va_list args)
 	}
 #if 1
 	case ZFD_IOCTL_SET_LOCK:
-		struct k_mutex *lock = va_arg(args, struct k_mutex *);
-		sock->lock = lock;
-		printk("SET_LOCK stored lock=%p zfd=%d remote=%d\n", (void *)lock, sock->zfd,
-		       sock->fd);
-		return 0;
-#endif
-	default:
-		errno = EINVAL;
-		return -1;
-	}
+    	struct k_mutex *lock = va_arg(args, struct k_mutex *);
+    	sock->lock = lock;
+    	LOG_DBG("SET_LOCK stored lock=%p zfd=%d remote=%d", (void *)lock, sock->zfd, sock->fd);
+    return 0;
+	#endif
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+}
+int erpc_wifi_socket_getpeername(void *obj, struct sockaddr *addr,
+                          socklen_t *addrlen)
+{
+    struct erpc_wifi_socket *sock = obj;
+
+    addr = &sock->addr;
+    addrlen = &sock->addrlen;
+
+    if (*addrlen == 0) {
+        errno = EBADF;
+    }
+
+    return *addrlen > 0 ? 0 : -1;
 }
 
 static const struct socket_op_vtable erpc_wifi_socket_fd_op_vtable = {
@@ -1111,6 +1246,7 @@ static const struct socket_op_vtable erpc_wifi_socket_fd_op_vtable = {
 	.getsockopt = erpc_wifi_socket_getsockopt,
 	.setsockopt = erpc_wifi_socket_setsockopt,
 	.sendmsg = erpc_wifi_socket_sendmsg,
+	.getpeername = erpc_wifi_socket_getpeername,
 
 };
 
@@ -1133,9 +1269,7 @@ static int erpc_wifi_socket_create(int family, int type, int proto)
 		LOG_ERR("unsupported family: %d", family);
 		return err;
 	}
-	erpc_wifi_lock();
 	sock = ra6w1_socket(family_erpc_wifi, type, proto);
-	erpc_wifi_unlock();
 	LOG_DBG("ra6w1_socket: %d", sock);
 
 	if (sock < 0) {

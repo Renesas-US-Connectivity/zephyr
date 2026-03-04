@@ -54,6 +54,7 @@ struct erpc_wifi_data {
 	struct k_sem sem_if_ready;
 
 	char fw_version_driver[ERPC_WIFI_DRV_FW_VER_LEN_MAX];
+	bool wifi_params_read;
 	bool ipv4_assigned;
 #if defined(CONFIG_NET_IPV6)
 	bool ipv6_assigned;

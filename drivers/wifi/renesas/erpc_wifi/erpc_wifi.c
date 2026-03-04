@@ -23,6 +23,7 @@ LOG_MODULE_REGISTER(wifi_erpc_wifi, CONFIG_WIFI_LOG_LEVEL);
 
 #include <zephyr/net/wifi_mgmt.h>
 #include <zephyr/net/wifi_utils.h>
+#include <zephyr/net/dns_resolve.h>
 #include <zephyr/net/conn_mgr/connectivity_wifi_mgmt.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/drivers/gpio.h>
@@ -86,9 +87,15 @@ struct pmgr_timer_evt {
 };
 
 K_MSGQ_DEFINE(pmgr_timer_msgq, sizeof(struct pmgr_timer_evt), 8, 4);
-
+#ifdef CONFIG_ERPC_TRANSPORT_UART
 static void pmgr_timer_work_handler(struct k_work *work);
 static K_WORK_DEFINE(pmgr_timer_work, pmgr_timer_work_handler);
+#endif
+static int erpc_wifi_init_erpc(struct erpc_wifi_data *data);
+static void erpc_wifi_deinit_erpc(struct erpc_wifi_data *data);
+int erpc_wifi_start_event_monitor(struct erpc_wifi_data *data);
+int erpc_wifi_stop_event_monitor(void);
+static int erpc_wifi_reset(void);
 
 __weak void erpc_wifi_pmgr_timer_fired_hook(uint32_t job_id, const char *timer_name)
 {
@@ -141,6 +148,8 @@ static inline enum WIFISecurity_t wifi_mgmt_to_drv_sec(int wifi_mgmt_security_ty
 		return eWiFiSecurityWPA;
 	case WIFI_SECURITY_TYPE_PSK:
 		return eWiFiSecurityWPA2;
+	case WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL:
+ 		return eWiFiSecurityWPA2;
 	case WIFI_SECURITY_TYPE_PSK_SHA256:
 		return eWiFiSecurityWPA2_ent;
 	case WIFI_SECURITY_TYPE_SAE:
@@ -148,6 +157,96 @@ static inline enum WIFISecurity_t wifi_mgmt_to_drv_sec(int wifi_mgmt_security_ty
 	default:
 		return eWiFiSecurityNotSupported;
 	}
+}
+
+
+static int erpc_wifi_acquire_reset_pin(void)
+{
+#if DT_INST_NODE_HAS_PROP(0, reset_gpios)
+	struct gpio_dt_spec wifi_reset = GPIO_DT_SPEC_GET(DT_DRV_INST(0), reset_gpios);
+
+	/* Set wifi_reset as output and activate reset */
+	int err = gpio_pin_configure_dt(&wifi_reset, GPIO_OUTPUT_ACTIVE);
+	if (err) {
+		LOG_ERR("Error %d: failed to configure wifi_reset %s pin %d", err,
+			wifi_reset.port->name, wifi_reset.pin);
+		return err;
+	}
+#endif
+
+	return 0;
+}
+
+static int erpc_wifi_release_reset_pin(void)
+{
+#if DT_INST_NODE_HAS_PROP(0, reset_gpios)
+	struct gpio_dt_spec wifi_reset = GPIO_DT_SPEC_GET(DT_DRV_INST(0), reset_gpios);
+
+	/* Release the device from reset */
+	int err = gpio_pin_configure_dt(&wifi_reset, GPIO_OUTPUT_INACTIVE);
+	if (err) {
+		return err;
+	}
+#endif
+
+	return 0;
+}
+
+static int erpc_wifi_reset(void)
+{
+	int err = 0;
+
+	err = erpc_wifi_acquire_reset_pin();
+	if (err) {
+		return err;
+	}
+
+#if DT_INST_NODE_HAS_PROP(0, reset_gpios)
+	k_sleep(K_MSEC(DT_INST_PROP_OR(0, reset_assert_duration_ms, 0)));
+#endif
+
+	/* Release the device from reset */
+	err = erpc_wifi_release_reset_pin();
+	if (err) {
+		return err;
+	}
+
+	/* We can either wait a fixed amount of time for the RA6Wx device to
+	   finish booting or we can wait for it to send us the reset complete
+	   eveent. At present, the SPI interface does not support sending the
+	   reset complete event so we have to just wait for boot to complete. */
+#if DT_INST_NODE_HAS_PROP(0, boot_duration_ms)
+	k_sleep(K_MSEC(DT_INST_PROP_OR(0, boot_duration_ms, 0)));
+#else
+	/*
+	   While we are waiting for this sempahore the erpc_wifi_server_thread
+	   is running and calling erpc_server_poll to check for any incoming
+	   message. When a valid message is received the ra_erpc_server_event_handler
+	   function is called. The eRPC middleware sets the nestingDetection flag
+	   to true just before calling the hanlder and sets it to false when execution
+	   of the handler is complete and it has returned.
+
+	   When the handler receives the eDeviceReset event it gives the
+	   sem_if_ready sempaphore. This causes the thread running the handler
+	   to immediately suspend and the RTOS starts running this init function
+	   once again. It continues through this init function and starts running
+	   main. In main the application calls a driver function, however this call
+	   fails as when it calls the associated eRPC function a nesting error occurs
+	   as the ra_erpc_server_event_handler has not yet had time to finish and so
+	   the nestingDetection flag is still true...
+
+	   According to the Zephyr documentation, the system thread running this init
+	   function has the highest priority and therefore we can simply increase the
+	   priority of the erpc_wifi_server_thread to resolve this issue:
+	   https://docs.zephyrproject.org/latest/kernel/services/threads/system_threads.html
+	*/
+	err = k_sem_take(&erpc_wifi_driver_data->sem_if_ready, K_MSEC(CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT));
+	if (err) {
+		return err;
+	}
+#endif
+
+	return 0;
 }
 
 /*
@@ -201,25 +300,39 @@ static int erpc_wifi_mgmt_scan(const struct device *dev, struct wifi_scan_params
 			       scan_result_cb_t cb)
 {
 	struct erpc_wifi_data *data = dev->data;
-
-	LOG_DBG("erpc_wifi_mgmt_scan");
+	int ret = 0;
+	LOG_DBG("erpc_wifi_mgmt_scan: state: %d", data->state);
 	LOG_DBG("type: %d cb: 0x%x", params->scan_type, (int)data->scan_cb);
 
 	if (data->scan_cb != NULL) {
-		return -EINPROGRESS;
+		ret = -EINPROGRESS;
+		goto error;
 	}
 
 	if (!net_if_is_carrier_ok(data->net_iface)) {
-		return -EIO;
+		ret = -EIO;
+		goto error;
 	}
-
+	switch (data->state) {
+	case WIFI_STATE_INACTIVE:
+	case WIFI_STATE_DISCONNECTED:
+		break;
+	case WIFI_STATE_COMPLETED:
+		ret = -EISCONN;
+		goto error;
+	default:
+		ret = -EACCES;
+		goto error;
+ 	}
 	data->scan_cb = cb;
 	data->scan_max_bss_cnt = params->max_bss_cnt;
 	data->state = WIFI_STATE_SCANNING;
 
 	k_work_submit_to_queue(&data->workq, &data->scan_work);
 
-	return 0;
+error:
+	LOG_DBG("scan request ret: %d (%s)", ret, strerror(-ret));
+	return ret;
 }
 
 /*
@@ -308,19 +421,20 @@ static void erpc_wifi_mgmt_scan_work(struct k_work *work)
 				memcpy(entry.mac, results[i].ucBSSID, entry.mac_length);
 				entry.band = wifi_chan_to_band(entry.channel);
 
-				dev->scan_cb(dev->net_iface, 0, &entry);
+				net_mgmt_event_notify_with_info(NET_EVENT_WIFI_SCAN_RESULT,
+				dev->net_iface, &entry, sizeof(entry));
+
 				k_yield();
 			}
-		} else {
-			// TODO - pass back an enumerated error code?
-			dev->scan_cb(dev->net_iface, -1, NULL);
 		}
+
 		free(results);
 	}
 
-	dev->scan_cb(dev->net_iface, 0, NULL);
 	dev->scan_cb = NULL;
+	net_mgmt_event_notify(NET_EVENT_WIFI_SCAN_DONE, dev->net_iface);
 	dev->state = WIFI_STATE_DISCONNECTED;
+	LOG_DBG("Scan end. Device state: %d", dev->state);
 }
 
 /*
@@ -433,9 +547,26 @@ static int erpc_wifi_mgmt_connect(const struct device *dev, struct wifi_connect_
 {
 	struct erpc_wifi_data *data = dev->data;
 
-	LOG_DBG("erpc_wifi_mgmt_connect");
+	LOG_INF("erpc_wifi_mgmt_connect: state: %d", data->state);
 
-	memset(&data->drv_nwk_params, 0, sizeof(sizeof(WIFINetworkParams_t)));
+	switch (data->state) {
+	case WIFI_STATE_DISCONNECTED:
+	case WIFI_STATE_INACTIVE:
+		break;
+	case WIFI_STATE_COMPLETED:
+		wifi_mgmt_raise_connect_result_event(data->net_iface, WIFI_STATUS_CONN_SUCCESS);
+		return -EALREADY;
+	default:
+		return -EBUSY;
+	}
+
+	if (k_work_is_pending(&data->connect_work)) {
+		LOG_WRN("Connection worker is pending");
+		return -EBUSY;
+	}
+	//memset(&data->drv_nwk_params, 0, sizeof(sizeof(WIFINetworkParams_t)));
+	memset(&data->drv_nwk_params, 0, sizeof(WIFINetworkParams_t));
+	
 
 	data->drv_nwk_params.ucSSIDLength =
 		MIN(params->ssid_length, sizeof(data->drv_nwk_params.ucSSID));
@@ -448,7 +579,16 @@ static int erpc_wifi_mgmt_connect(const struct device *dev, struct wifi_connect_
 	       data->drv_nwk_params.xPassword.xWPA.ucLength);
 	data->drv_nwk_params.ucChannel = params->channel;
 
-	k_work_submit_to_queue(&data->workq, &data->connect_work);
+	data->state = WIFI_STATE_ASSOCIATING;
+	data->wifi_params_read = false;
+	int ret = k_work_submit_to_queue(&data->workq, &data->connect_work);
+	if (ret < 0) {
+		data->state = WIFI_STATE_DISCONNECTED;
+		wifi_mgmt_raise_connect_result_event(data->net_iface, WIFI_STATUS_CONN_FAIL);
+		return ret;
+	}
+ 
+	/* k_work_submit_to_queue can return positive value and We always require 0 on success */
 
 	return 0;
 }
@@ -479,6 +619,7 @@ static void erpc_wifi_mgmt_connect_work(struct k_work *work)
 		status = WIFI_STATUS_CONN_SUCCESS;
 		net_if_dormant_off(dev->net_iface);
 	} else {
+		dev->state = WIFI_STATE_DISCONNECTED;
 		status = WIFI_STATUS_CONN_FAIL;
 	}
 
@@ -518,7 +659,7 @@ static void erpc_wifi_mgmt_disconnect_work(struct k_work *work)
 	}
 
 	dev->state = WIFI_STATE_DISCONNECTED;
-
+	dev->wifi_params_read = false;
 	wifi_mgmt_raise_disconnect_result_event(dev->net_iface, status);
 	net_if_dormant_on(dev->net_iface);
 }
@@ -565,6 +706,22 @@ static struct k_work_delayable g_ps_enable_work;
 static void ps_send_param_to_ra(ra_wifi_ps_param_t p, uint32_t v)
 {
 	(void)ra6w1_wifi_ps_set_param(p, v);
+}
+static int erpc_wifi_mgmt_get_power_save_config(const struct device *dev, struct wifi_ps_config *config)
+{
+	ARG_UNUSED(dev);
+	LOG_INF("get power save config");
+
+	config->num_twt_flows = 0;
+	memset(config->twt_flows, 0, sizeof(config->twt_flows));
+
+	config->ps_params.listen_interval = (unsigned short) g_ps.listen_interval;
+	config->ps_params.wakeup_mode = (enum wifi_ps_wakeup_mode) g_ps.wakeup_mode;
+	config->ps_params.timeout_ms = g_ps.timeout_ms;
+	config->ps_params.exit_strategy = (enum wifi_ps_exit_strategy) g_ps.exit_strategy;
+	config->ps_params.enabled = g_ps.enabled;
+
+	return 0;
 }
 #if 1
 static void ps_allow_sleep_work(struct k_work *work)
@@ -625,12 +782,15 @@ int erpc_wifi_ping(uint32_t timeout_ms)
 
 	return -EIO;
 }
-static int erpc_wifi_mgmt_set_power_save(struct net_if *iface, struct wifi_ps_params *params)
+static int erpc_wifi_mgmt_set_power_save(const struct device *dev, struct wifi_ps_params *params)
 {
-	ARG_UNUSED(iface);
+	struct erpc_wifi_data *data = dev->data;
 
 	if (params == NULL) {
 		return -EINVAL;
+	}
+	if (data && data->state == WIFI_STATE_INTERFACE_DISABLED) {
+		return -EPERM;
 	}
 
 	LOG_INF("PS set: type=%u enabled=%u li=%u wm=%u exit=%u tmo=%u", params->type,
@@ -721,6 +881,8 @@ static int erpc_wifi_mgmt_set_power_save(struct net_if *iface, struct wifi_ps_pa
 	default:
 		return -ENOTSUP;
 	}
+
+	return 0;
 }
 
 /*
@@ -763,23 +925,56 @@ static int erpc_wifi_mgmt_set_power_save(struct net_if *iface, struct wifi_ps_pa
 int erpc_wifi_mgmt_iface_status(const struct device *dev, struct wifi_iface_status *status)
 {
 	struct erpc_wifi_data *data = dev->data;
+	
+	static WIFIConnectionInfo_t connection_info = { 0 };
+	int8_t rssi = -127;
+	int ret = 0;
 
 	status->state = data->state;
-	status->ssid_len = data->drv_nwk_params.ucSSIDLength;
-	memcpy(status->ssid, data->drv_nwk_params.ucSSID,
-	       MIN(sizeof(status->ssid), status->ssid_len));
 	status->channel = data->drv_nwk_params.ucChannel;
-	status->security = drv_to_wifi_mgmt_sec(data->drv_nwk_params.xSecurity);
 	status->band = wifi_chan_to_band(data->drv_nwk_params.ucChannel);
 
-	return 0;
+	switch  (status->state) {
+	case WIFI_STATE_DISCONNECTED:
+		data->wifi_params_read = false;
+		break;
+	case WIFI_STATE_COMPLETED:
+		if (!data->wifi_params_read) {
+
+			status->ssid_len = data->drv_nwk_params.ucSSIDLength;
+			memcpy(status->ssid, data->drv_nwk_params.ucSSID, status->ssid_len);
+			status->security = drv_to_wifi_mgmt_sec(data->drv_nwk_params.xSecurity);
+
+			memset(&connection_info, 0, sizeof(connection_info));
+			data->wifi_params_read = (eWiFiSuccess == WIFI_GetConnectionInfo(&connection_info));
+
+			memcpy(status->bssid, connection_info.ucBSSID, sizeof(connection_info.ucBSSID));
+		}
+
+		WIFI_GetRSSI(&rssi);
+
+		break;
+	case WIFI_STATE_AUTHENTICATING:
+		LOG_DBG("Device connect in progress...");
+		break;
+	default:
+		LOG_DBG("Device state: %d", status->state);
+		break;
+	}
+
+	status->rssi = (int) rssi;
+
+	return ret;
 }
 
 int erpc_wifi_mgmt_get_version(const struct device *dev, struct wifi_version *params)
 {
 	struct erpc_wifi_data *data = dev->data;
 
-	fw_version_get_driver_ver(data->fw_version_driver, sizeof(data->fw_version_driver));
+	// fw_version_get_supp_ver(params->supplicant_version, WIFI_VERSION_MAC_STR_LEN);
+
+	fw_version_get_driver_ver(data->fw_version_driver,
+			 sizeof(data->fw_version_driver));
 
 	params->drv_version = data->fw_version_driver;
 	params->fw_version = NULL;
@@ -790,6 +985,54 @@ int erpc_wifi_mgmt_get_version(const struct device *dev, struct wifi_version *pa
 static enum offloaded_net_if_types erpc_wifi_offload_get_type(void)
 {
 	return L2_OFFLOADED_NET_IF_TYPE_WIFI;
+}
+
+static int erpc_wifi_iface_enable(const struct net_if *iface, bool state)
+{
+	int ret = 0;
+
+	LOG_INF("WiFi Iface %p enable: %d", iface, state);
+
+	if (!iface) {
+		return -ENODEV;
+	}
+	struct erpc_wifi_data *data = iface->if_dev->dev->data;
+
+	if (state) {
+
+		if (data->state != WIFI_STATE_INTERFACE_DISABLED) {
+			LOG_INF("Device already enabled");
+			return -EALREADY;
+		}
+
+		/* If reset pin is held (NO_AUTO_START path), release and reset the module
+		 * before bringing up eRPC transport. This avoids stale/partial frames and
+		 * CRC failures on first transactions.
+		 */
+		erpc_wifi_release_reset_pin();
+		(void)erpc_wifi_reset();
+
+		data->state = WIFI_STATE_INACTIVE;
+
+		ret = erpc_wifi_init_erpc(data);
+		if (ret != 0) {
+			LOG_ERR("Failed to initialize eRPC stack: %d (%s)", ret, strerror(-ret));
+			data->state = WIFI_STATE_INTERFACE_DISABLED;
+		} 
+		return ret;
+
+	} else {
+
+		if (data->state != WIFI_STATE_INTERFACE_DISABLED) {
+			erpc_wifi_deinit_erpc(data);
+			erpc_wifi_stop_event_monitor();
+			data->state = WIFI_STATE_INTERFACE_DISABLED;
+		}
+	}
+
+	LOG_DBG("enable state: %d satus: %d (%s)", state, ret, strerror(-ret));
+
+	return ret;
 }
 
 static void erpc_wifi_iface_init(struct net_if *iface)
@@ -814,21 +1057,32 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 		return;
 	}
 
+#ifdef CONFIG_DNS_RESOLVER
+	static const char *dns_servers[CONFIG_DNS_RESOLVER_MAX_SERVERS];
+#endif
+
 	if (config->xIPAddress.xType == eWiFiIPAddressTypeV4) {
 		struct in_addr ip, netmask, gateway;
+		struct in_addr dns1, dns2;
 		char ip_str[16];
 		char netmask_str[16];
 		char gateway_str[16];
+		char dns1_str[16];
+		char dns2_str[16];
 
 		// Extract IPv4 address from WIFIIPAddress_t structure
 		uint32_t ip_raw = config->xIPAddress.ulAddress[0];
 		uint32_t netmask_raw = config->xNetMask.ulAddress[0];
 		uint32_t gateway_raw = config->xGateway.ulAddress[0];
+		uint32_t ip_dns1_raw = config->xDns1.ulAddress[0];
+		uint32_t ip_dns2_raw = config->xDns2.ulAddress[0];
 
 		// Convert from network byte order to individual bytes
 		uint8_t *ip_bytes = (uint8_t *)&ip_raw;
 		uint8_t *netmask_bytes = (uint8_t *)&netmask_raw;
 		uint8_t *gateway_bytes = (uint8_t *)&gateway_raw;
+		uint8_t *dns1_bytes = (uint8_t *)&ip_dns1_raw;
+		uint8_t *dns2_bytes = (uint8_t *)&ip_dns2_raw;
 
 		// Create IP strings for net_addr_pton
 		snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", ip_bytes[0], ip_bytes[1],
@@ -837,19 +1091,32 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 			 netmask_bytes[1], netmask_bytes[2], netmask_bytes[3]);
 		snprintf(gateway_str, sizeof(gateway_str), "%d.%d.%d.%d", gateway_bytes[0],
 			 gateway_bytes[1], gateway_bytes[2], gateway_bytes[3]);
+		snprintf(dns1_str, sizeof(dns1_str), "%d.%d.%d.%d", dns1_bytes[0], dns1_bytes[1],
+			 dns1_bytes[2], dns1_bytes[3]);
+		snprintf(dns2_str, sizeof(dns2_str), "%d.%d.%d.%d", dns2_bytes[0], dns2_bytes[1],
+			 dns2_bytes[2], dns2_bytes[3]);
 
 		// Convert to in_addr structures
 		net_addr_pton(AF_INET, ip_str, &ip);
 		net_addr_pton(AF_INET, netmask_str, &netmask);
 		net_addr_pton(AF_INET, gateway_str, &gateway);
+		net_addr_pton(AF_INET, dns1_str, &dns1);
+		net_addr_pton(AF_INET, dns2_str, &dns2);
+
+#ifdef CONFIG_DNS_RESOLVER
+		dns_servers[0] = dns1_str;
+		int ret = dns_resolve_reconfigure(dns_resolve_get_default(), dns_servers, NULL,
+						  DNS_SOURCE_DHCPV4);
+		LOG_INF("DNS resolve reconfigure: %d (%s)", ret, strerror(-ret));
+#endif
 
 		// Clear existing addresses and add new one
 #if defined(CONFIG_NET_IPV4)
-		net_if_ipv4_addr_rm(iface, NULL);
-		struct net_if_addr *ifaddr = net_if_ipv4_addr_add(iface, &ip, NET_ADDR_MANUAL, 0);
+		net_if_ipv4_addr_rm(iface, &ip);
+		struct net_if_addr *ifaddr = net_if_ipv4_addr_add(iface, &ip, NET_ADDR_DHCP, 0);
 
 		if (ifaddr) {
-			net_if_ipv4_set_netmask(iface, &netmask);
+			net_if_ipv4_set_netmask_by_addr(iface, &ip, &netmask);
 			net_if_ipv4_set_gw(iface, &gateway);
 
 			LOG_INF("DHCP IPv4 applied: %s", ip_str);
@@ -951,9 +1218,11 @@ void ra_erpc_server_event_handler(const ra_erp_server_event_t *event)
 		gw_addr.s_addr = event->event_data.xConfig.xGateway.ulAddress[0];
 		netmask.s_addr = event->event_data.xConfig.xNetMask.ulAddress[0];
 
+#ifdef CONFIG_NET_IPV4
 		net_if_ipv4_addr_add(data->net_iface, &ip_addr, NET_ADDR_DHCP, 0);
 		net_if_ipv4_set_gw(data->net_iface, &gw_addr);
 		net_if_ipv4_set_netmask_by_addr(data->net_iface, &ip_addr, &netmask);
+#endif
 		break;
 	}
 	case eNetworkInterfaceDown: {
@@ -1042,7 +1311,7 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		struct net_if *iface = data->net_iface;
 		if (!iface) {
 			LOG_WRN("No network interface available for event handling, waiting...");
-			k_msleep(500);
+			k_sleep(K_SECONDS(3));
 			continue;
 		}
 
@@ -1140,12 +1409,13 @@ int erpc_wifi_stop_event_monitor(void)
 	return 0;
 }
 static const struct wifi_mgmt_ops erpc_wifi_mgmt_ops = {
-	.scan = erpc_wifi_mgmt_scan,
-	.connect = erpc_wifi_mgmt_connect,
-	.disconnect = erpc_wifi_mgmt_disconnect,
-	.set_power_save = erpc_wifi_mgmt_set_power_save,
-	.iface_status = erpc_wifi_mgmt_iface_status,
-	.get_version = erpc_wifi_mgmt_get_version,
+	.scan		   		= erpc_wifi_mgmt_scan,
+	.connect	   		= erpc_wifi_mgmt_connect,
+	.disconnect	   		= erpc_wifi_mgmt_disconnect,
+	.get_power_save_config = erpc_wifi_mgmt_get_power_save_config,
+	.set_power_save		= erpc_wifi_mgmt_set_power_save,
+	.iface_status		= erpc_wifi_mgmt_iface_status,
+	.get_version        = erpc_wifi_mgmt_get_version,
 #ifdef CONFIG_WIFI_ERPC_WIFI_SOFTAP_SUPPORT
 	.ap_enable = NULL,
 	.ap_disable = NULL,
@@ -1157,6 +1427,7 @@ static const struct wifi_mgmt_ops erpc_wifi_mgmt_ops = {
 static const struct net_wifi_mgmt_offload erpc_wifi_api = {
 	.wifi_iface.iface_api.init = erpc_wifi_iface_init,
 	.wifi_iface.get_type = erpc_wifi_offload_get_type,
+	.wifi_iface.enable = erpc_wifi_iface_enable,
 	.wifi_mgmt_api = &erpc_wifi_mgmt_ops,
 };
 
@@ -1179,6 +1450,7 @@ static void erpc_wifi_deinit_erpc(struct erpc_wifi_data *data)
 
 	if (data->client_manager) {
 		erpc_client_deinit(data->client_manager);
+		deinitwifi_client();
 		data->client_manager = NULL;
 	}
 
@@ -1258,6 +1530,8 @@ static int erpc_wifi_init_erpc(struct erpc_wifi_data *data)
 	}
 #endif
 
+	data->driver_state = ERPC_WIFI_DRIVER_INITIALIZED;
+
 	return 0;
 }
 
@@ -1266,6 +1540,7 @@ static void erpc_wifi_reinit_work_handler(struct k_work *work)
 	struct erpc_wifi_data *data = CONTAINER_OF(work, struct erpc_wifi_data, reinit_work);
 
 	LOG_WRN("Re-initializing eRPC stack due to device reset...");
+	data->driver_state = ERPC_WIFI_DRIVER_INITIALIZING;
 
 	erpc_wifi_deinit_erpc(data);
 
@@ -1277,7 +1552,6 @@ static void erpc_wifi_reinit_work_handler(struct k_work *work)
 		LOG_ERR("Failed to re-initialize eRPC stack: %d", ret);
 	} else {
 		LOG_INF("eRPC re-initialization complete");
-		data->driver_state = ERPC_WIFI_DRIVER_INITIALIZED;
 	}
 }
 
@@ -1291,11 +1565,12 @@ CONNECTIVITY_WIFI_MGMT_BIND(Z_DEVICE_DT_DEV_ID(DT_DRV_INST(0)));
 static int erpc_wifi_init(const struct device *dev)
 {
 	struct erpc_wifi_data *data = dev->data;
-	int ret;
+	int ret = 0;
 
 	LOG_DBG("initializing...");
 
 	data->driver_state = ERPC_WIFI_DRIVER_INITIALIZING;
+	data->state = WIFI_STATE_INTERFACE_DISABLED;
 	data->reset_msg_received = false;
 
 	k_work_init(&data->scan_work, erpc_wifi_mgmt_scan_work);
@@ -1313,16 +1588,9 @@ static int erpc_wifi_init(const struct device *dev)
 			   K_PRIO_COOP(CONFIG_WIFI_ERPC_WIFI_WORKQ_THREAD_PRIORITY), NULL);
 	k_thread_name_set(&data->workq.thread, "erpc_wifi_workq");
 
-	/* Initialize the eRPC client infrastructure */
-	ret = erpc_wifi_init_erpc(data);
-	if (ret != 0) {
-		return ret;
-	}
-
 	data->net_iface = NET_IF_GET(Z_DEVICE_DT_DEV_ID(DT_DRV_INST(0)), 0);
 
 #if DT_INST_NODE_HAS_PROP(0, reset_gpios)
-	int err = 0;
 	struct gpio_dt_spec wifi_reset = GPIO_DT_SPEC_GET(DT_DRV_INST(0), reset_gpios);
 
 	if (!gpio_is_ready_dt(&wifi_reset)) {
@@ -1330,62 +1598,31 @@ static int erpc_wifi_init(const struct device *dev)
 			wifi_reset.pin);
 		return -EIO;
 	}
-
-	/* Set wifi_reset as output and activate reset */
-	err = gpio_pin_configure_dt(&wifi_reset, GPIO_OUTPUT_ACTIVE);
-	if (err) {
-		LOG_ERR("Error %d: failed to configure wifi_reset %s pin %d", err,
-			wifi_reset.port->name, wifi_reset.pin);
-		return err;
-	}
-
-	k_sleep(K_MSEC(DT_INST_PROP_OR(0, reset_assert_duration_ms, 0)));
-
-	/* Release the device from reset */
-	err = gpio_pin_configure_dt(&wifi_reset, GPIO_OUTPUT_INACTIVE);
-	if (err) {
-		return err;
-	}
-
-/* We can either wait a fixed amount of time for the RA6Wx device to
-   finish booting or we can wait for it to send us the reset complete
-   eveent. At present, the SPI interface does not support sending the
-   reset complete event so we have to just wait for boot to complete. */
-#if DT_INST_NODE_HAS_PROP(0, boot_duration_ms)
-	k_sleep(K_MSEC(DT_INST_PROP_OR(0, boot_duration_ms, 0)));
-#else
-	/*
-	   While we are waiting for this sempahore the erpc_wifi_server_thread
-	   is running and calling erpc_server_poll to check for any incoming
-	   message. When a valid message is received the ra_erpc_server_event_handler
-	   function is called. The eRPC middleware sets the nestingDetection flag
-	   to true just before calling the hanlder and sets it to false when execution
-	   of the handler is complete and it has returned.
-
-	   When the handler receives the eDeviceReset event it gives the
-	   sem_if_ready sempaphore. This causes the thread running the handler
-	   to immediately suspend and the RTOS starts running this init function
-	   once again. It continues through this init function and starts running
-	   main. In main the application calls a driver function, however this call
-	   fails as when it calls the associated eRPC function a nesting error occurs
-	   as the ra_erpc_server_event_handler has not yet had time to finish and so
-	   the nestingDetection flag is still true...
-
-	   According to the Zephyr documentation, the system thread running this init
-	   function has the highest priority and therefore we can simply increase the
-	   priority of the erpc_wifi_server_thread to resolve this issue:
-	   https://docs.zephyrproject.org/latest/kernel/services/threads/system_threads.html
-	*/
-	err = k_sem_take(&data->sem_if_ready, K_MSEC(CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT));
-	if (err) {
-		return err;
-	}
-
-	data->driver_state = ERPC_WIFI_DRIVER_INITIALIZED;
 #endif
-#endif /* DT_INST_NODE_HAS_PROP(0, reset_gpios) */
+
+#if defined(CONFIG_NET_CONFIG_AUTO_INIT)
+	/* Initialize the eRPC client infrastructure */	
+	ret = erpc_wifi_init_erpc(data);
+	if (ret != 0) {
+		return ret;
+	}
+
+	data->state = WIFI_STATE_DISCONNECTED;
+
+	net_if_flag_clear(data->net_iface, NET_IF_NO_AUTO_START);
+	net_if_flag_set(data->net_iface, NET_IF_UP);
+	net_if_flag_set(data->net_iface, NET_IF_LOWER_UP);
+
+	erpc_wifi_reset();
+
+#else
+	net_if_flag_set(data->net_iface, NET_IF_NO_AUTO_START);
+	net_if_flag_clear(data->net_iface, NET_IF_UP);
+	/* Hold the reset pin to prevent Wi-Fi module from enabling to save power */
+	erpc_wifi_acquire_reset_pin();
+#endif
 
 	LOG_DBG("complete!");
 
-	return 0;
+	return ret;
 }
