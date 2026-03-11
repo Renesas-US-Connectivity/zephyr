@@ -17,7 +17,7 @@
 LOG_MODULE_REGISTER(ncp_fw_loader, CONFIG_WIFI_LOG_LEVEL);
 
 #include "ncp_fw_loader.h"
-#include "ncp_fw_loader_binaries_v2.h"
+#include "ncp_fw_loader_binaries_v3.h"
 #include "adc_ep_img.h"
 #include "crc32.h"
 
