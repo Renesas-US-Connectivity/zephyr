@@ -985,7 +985,7 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 		net_addr_pton(AF_INET, gateway_str, &gateway);
 
 		// Clear existing addresses and add new one
-#ifdef (CONFIG_NET_IPV4)
+#if defined(CONFIG_NET_IPV4)
 		net_if_ipv4_addr_rm(iface, NULL);
 		struct net_if_addr *ifaddr = net_if_ipv4_addr_add(iface, &ip, NET_ADDR_MANUAL, 0);
 
