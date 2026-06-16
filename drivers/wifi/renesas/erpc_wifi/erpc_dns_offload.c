@@ -12,7 +12,7 @@ static int offload_getaddrinfo(const char *node, const char *service,
 {
 	WIFIReturnCode_t server_status;
 	uint8_t actual_count = 0;
-	int ret = EAI_SYSTEM; // Default to system error
+	int ret = DNS_EAI_SYSTEM; // Default to system error
 	struct zsock_addrinfo *head = NULL;
 	struct zsock_addrinfo *prev = NULL;
 	WIFIIPAddress_t *result;
@@ -30,7 +30,7 @@ static int offload_getaddrinfo(const char *node, const char *service,
 	// 3. Check eRPC Transport Error
 	if (server_status != eWiFiSuccess) {
 		// Assume non-success means a transport error or unrecoverable LwIP error
-		return EAI_SYSTEM;
+		return DNS_EAI_SYSTEM;
 	}
 
 	// 4. Check LwIP Error (The server returns the LwIP error code in WIFIReturnCode_t)
