@@ -349,7 +349,7 @@ static int element_token(enum json_tokens token)
 	case JSON_TOK_NUMBER:
 	case JSON_TOK_INT:
 	case JSON_TOK_UINT:
-	case JSON_TOK_INT64:
+		return decode_string(*str_ptr, value->end - value->start);
 	case JSON_TOK_UINT64:
 	case JSON_TOK_FLOAT:
 	case JSON_TOK_FLOAT_FP:
@@ -358,6 +358,7 @@ static int element_token(enum json_tokens token)
 	case JSON_TOK_OBJ_ARRAY:
 	case JSON_TOK_TRUE:
 	case JSON_TOK_FALSE:
+	case JSON_TOK_NULL:
 		return 0;
 	default:
 		return -EINVAL;
@@ -394,6 +395,11 @@ static int obj_next(struct json_obj *json,
 	case JSON_TOK_STRING:
 		kv->key = tok.start;
 		kv->key_len = (size_t)(tok.end - tok.start);
+		break;
+	case JSON_TOK_NULL:
+		/* Accept "paramter": null */
+		kv->key = NULL;
+		kv->key_len = 0;
 		break;
 	default:
 		return -EINVAL;
@@ -440,7 +446,8 @@ static int skip_field(struct json_obj *obj, struct json_obj_key_value *kv)
 	int field_count = 1;
 
 	if (kv->value.type == JSON_TOK_OBJECT_START ||
-	    kv->value.type == JSON_TOK_ARRAY_START) {
+	    kv->value.type == JSON_TOK_ARRAY_START ||
+	    kv->value.type == JSON_TOK_NULL) {
 		while (field_count > 0 && lexer_next(&obj->lex, &kv->value)) {
 			switch (kv->value.type) {
 			case JSON_TOK_OBJECT_START:
@@ -449,6 +456,7 @@ static int skip_field(struct json_obj *obj, struct json_obj_key_value *kv)
 				break;
 			case JSON_TOK_OBJECT_END:
 			case JSON_TOK_ARRAY_END:
+			case JSON_TOK_NULL:
 				field_count--;
 				break;
 			case JSON_TOK_ERROR:
@@ -456,6 +464,56 @@ static int skip_field(struct json_obj *obj, struct json_obj_key_value *kv)
 			default:
 				break;
 			}
+		}
+	}
+
+	return 0;
+}
+
+static int decode_string(char *decode, size_t decode_len)
+{
+	char *start = decode;
+	char *end = decode + decode_len;
+	char *ptr = end;
+
+	while (ptr > start) {
+		ptr--;
+
+		if (*ptr == '\\') {
+			if (ptr != start && *(ptr - 1) == '\\') {
+				continue;
+			}
+
+			switch (*(ptr + 1)) {
+			case '"':
+				*ptr = '"';
+				break;
+			case '\\':
+				*ptr = '\\';
+				break;
+			case '/':
+				*ptr = '/';
+				break;
+			case 'b':
+				*ptr = '\b';
+				break;
+			case 'f':
+				*ptr = '\f';
+				break;
+			case 'n':
+				*ptr = '\n';
+				break;
+			case 'r':
+				*ptr = '\r';
+				break;
+			case 't':
+				*ptr = '\t';
+				break;
+			default:
+				break;
+			}
+
+			memmove(ptr + 1, ptr + 2, end - ptr - 1);
 		}
 	}
 
@@ -848,6 +906,10 @@ static int64_t decode_value(struct json_obj *obj,
 {
 
 	if (!equivalent_types(value->type, descr->type)) {
+		if (value->type == JSON_TOK_NULL) {
+			*value->start = '\0';
+			return 0;
+		}
 		return -EINVAL;
 	}
 
@@ -919,7 +981,7 @@ static int64_t decode_value(struct json_obj *obj,
 		*value->end = '\0';
 		*str = value->start;
 
-		return 0;
+		return decode_string(*str, value->end - value->start);
 	}
 	case JSON_TOK_STRING_BUF: {
 		char *str = field;
@@ -1002,6 +1064,12 @@ static int arr_parse(struct json_obj *obj,
 	void *last_elem;
 	struct json_token tok;
 
+	if (elem_descr->type == JSON_TOK_NULL) {
+		/* Array element descriptor is NULL */
+		field = NULL;
+		return 0;
+	}
+
 	/* For nested arrays, skip parent descriptor to get elements */
 	if (elem_descr->type == JSON_TOK_ARRAY_START) {
 		elem_descr = elem_descr->array.element_descr;
@@ -1073,6 +1141,10 @@ static int arr_data_parse(struct json_obj *obj, struct json_obj_token *val)
 			} else if (*obj->lex.pos == JSON_TOK_ARRAY_START) {
 				/* array in array update structure count */
 				array_in_array++;
+			} else if (*obj->lex.pos == JSON_TOK_NULL) {
+				/* If array is null, like "param":null */
+				val->length = obj->lex.pos - val->start + 1;
+				return 0;
 			}
 		}
 		obj->lex.pos++;
@@ -1145,6 +1217,10 @@ int64_t json_obj_parse(char *payload, size_t len,
 	__ASSERT_NO_MSG(descr_len < (sizeof(ret) * CHAR_BIT - 1));
 
 	ret = obj_init(&obj, payload, len);
+		if (value->type == JSON_TOK_NULL) {
+			*value->start = '\0';
+			return 0;
+		}
 	if (ret < 0) {
 		return ret;
 	}
@@ -1834,7 +1910,7 @@ static int extract_raw_json_data(struct json_obj *obj, struct json_token *value,
 	return 0;
 
 	default:
-	return -EINVAL;
+		return -EINVAL;
 	}
 }
 
@@ -1909,7 +1985,7 @@ static int64_t decode_mixed_value(struct json_obj *obj,
 
 		*value->end = '\0';
 		*str_ptr = value->start;
-		return 0;
+		return decode_string(*str_ptr, value->end - value->start);
 	}
 	case JSON_TOK_STRING_BUF: {
 		char *str_buf = field;

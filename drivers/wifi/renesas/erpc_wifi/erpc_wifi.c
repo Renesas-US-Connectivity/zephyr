@@ -51,6 +51,13 @@ K_KERNEL_STACK_DEFINE(erpc_wifi_workq_stack, CONFIG_WIFI_ERPC_WIFI_WORKQ_STACK_S
 #define EVENT_MONITOR_STACK_SIZE 4096
 K_THREAD_STACK_DEFINE(event_monitor_stack, EVENT_MONITOR_STACK_SIZE);
 
+#define OPERATION_RETRY_MAX 30000
+
+#if DT_INST_NODE_HAS_PROP(0, int_gpios)
+static struct gpio_dt_spec n_int_gpio = GPIO_DT_SPEC_GET(DT_DRV_INST(0), int_gpios);
+static struct k_sem sem_if_enabled;
+#endif
+
 // Thread control structure
 static struct k_thread event_monitor_thread;
 static k_tid_t event_monitor_tid;
@@ -75,6 +82,32 @@ void erpc_wifi_unlock(void)
 {
 	k_mutex_unlock(&g_erpc_wifi_mutex);
 }
+
+#if DT_INST_NODE_HAS_PROP(0, int_gpios)
+static void n_int_iface_active_cb(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(cb);
+	ARG_UNUSED(pins);
+	k_sem_give(&sem_if_enabled);
+}
+
+static int erpc_wifi_wait_interface_enable(void)
+{
+	k_timeout_t timeout = K_NO_WAIT;
+
+#ifdef CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT
+	timeout = K_MSEC(CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT);
+#endif
+
+	/* If N_INT is already active, module is already enabled. */
+	if (erpc_wifi_transport_slave_ready() != 0) {
+		return 0;
+	}
+
+	return k_sem_take(&sem_if_enabled, timeout);
+}
+#endif
 
 #if DT_INST_NODE_HAS_PROP(0, rrq_gpios)
 #define GPIO_WAKEUP_NODE DT_DRV_INST(0)
@@ -126,6 +159,73 @@ void erpc_wifi_gpio_trigger_wakeup(void)
 #else
 	LOG_DBG("rrq_gpios property not defined; wakeup pulse unavailable");
 #endif
+}
+
+static int erpc_wifi_acquire_reset_pin(void)
+{
+#if DT_INST_NODE_HAS_PROP(0, reset_gpios)
+	struct gpio_dt_spec wifi_reset = GPIO_DT_SPEC_GET(DT_DRV_INST(0), reset_gpios);
+
+	/* Set wifi_reset as output and activate reset */
+	int err = gpio_pin_configure_dt(&wifi_reset, GPIO_OUTPUT_ACTIVE);
+	if (err) {
+		LOG_ERR("Error %d: failed to configure wifi_reset %s pin %d", err,
+			wifi_reset.port->name, wifi_reset.pin);
+		return err;
+	}
+#endif
+
+	return 0;
+}
+
+static int erpc_wifi_release_reset_pin(void)
+{
+#if DT_INST_NODE_HAS_PROP(0, reset_gpios)
+	struct gpio_dt_spec wifi_reset = GPIO_DT_SPEC_GET(DT_DRV_INST(0), reset_gpios);
+
+	/* Release the device from reset */
+	int err = gpio_pin_configure_dt(&wifi_reset, GPIO_OUTPUT_INACTIVE);
+	if (err) {
+		return err;
+	}
+#endif
+
+	return 0;
+}
+
+static int erpc_wifi_reset(void)
+{
+	k_timeout_t timeout = K_NO_WAIT;
+	int err = 0;
+
+	err = erpc_wifi_acquire_reset_pin();
+	if (err) {
+		return err;
+	}
+
+	k_sleep(K_MSEC(DT_INST_PROP_OR(0, reset_assert_duration_ms, 0)));
+
+	/* Release the device from reset */
+	err = erpc_wifi_release_reset_pin();
+	if (err) {
+		return err;
+	}
+
+#if DT_INST_NODE_HAS_PROP(0, boot_duration_ms)
+	k_sleep(K_MSEC(DT_INST_PROP_OR(0, boot_duration_ms, 0)));
+#else
+#if DT_INST_NODE_HAS_PROP(0, int_gpios)
+	err = erpc_wifi_wait_interface_enable();
+	if (err < 0) {
+		LOG_ERR("Interface enable wait timed out (%d)", err);
+		return err;
+	}
+#elif defined(CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT)
+	k_sleep(K_MSEC(CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT));
+#endif
+#endif
+
+	return 0;
 }
 
 #ifndef ERPC_WIFI_TIMER_NAME_MAX
@@ -484,12 +584,30 @@ static void erpc_wifi_mgmt_scan_work(struct k_work *work)
 static void erpc_wifi_ps_set_state_internal(bool enabled);
 static void erpc_wifi_ps_push_defaults(void);
 static int erpc_wifi_init_erpc(struct erpc_wifi_data *data);
+static void erpc_wifi_deinit_erpc(struct erpc_wifi_data *data);
+static int erpc_wifi_reset(void);
 
 static int erpc_wifi_mgmt_connect(const struct device *dev, struct wifi_connect_req_params *params)
 {
 	struct erpc_wifi_data *data = dev->data;
 
-	LOG_DBG("erpc_wifi_mgmt_connect");
+	LOG_INF("erpc_wifi_mgmt_connect: state: %d", data->state);
+
+	switch (data->state) {
+	case WIFI_STATE_DISCONNECTED:
+	case WIFI_STATE_INACTIVE:
+		break;
+	case WIFI_STATE_COMPLETED:
+		wifi_mgmt_raise_connect_result_event(data->net_iface, WIFI_STATUS_CONN_SUCCESS);
+		return -EALREADY;
+	default:
+		return -EBUSY;
+	}
+
+	if (k_work_is_pending(&data->connect_work)) {
+		LOG_WRN("Connection worker is pending");
+		return -EBUSY;
+	}
 
 	memset(&data->drv_nwk_params, 0, sizeof(WIFINetworkParams_t));
 
@@ -504,8 +622,17 @@ static int erpc_wifi_mgmt_connect(const struct device *dev, struct wifi_connect_
 	       data->drv_nwk_params.xPassword.xWPA.ucLength);
 	data->drv_nwk_params.ucChannel = params->channel;
 
-	k_work_submit_to_queue(&data->workq, &data->connect_work);
+	data->state = WIFI_STATE_ASSOCIATING;
+	data->wifi_params_read = false;
 
+	int ret = k_work_submit_to_queue(&data->workq, &data->connect_work);
+	if (ret < 0) {
+		data->state = WIFI_STATE_DISCONNECTED;
+		wifi_mgmt_raise_connect_result_event(data->net_iface, WIFI_STATUS_CONN_FAIL);
+		return ret;
+	}
+
+	/* k_work_submit_to_queue can return positive value and We always require 0 on success */
 	return 0;
 }
 
@@ -532,19 +659,31 @@ static void erpc_wifi_mgmt_connect_work(struct k_work *work)
 	//erpc_wifi_ps_push_defaults();
 	LOG_INF("WiFi connect API: calling WIFI_ConnectAP");
 	erpc_wifi_lock();
-	ret = WIFI_ConnectAP(&dev->drv_nwk_params);
+	//ret = WIFI_ConnectAP(&dev->drv_nwk_params);
+	for (int i = 0; i < OPERATION_RETRY_MAX; i++) {
+		ret = WIFI_ConnectAP(&dev->drv_nwk_params);
+		if (ret != eWiFiBusy) {
+			break;
+		}
+
+		k_usleep(1);
+	}
 	erpc_wifi_unlock();
 	LOG_INF("WiFi connect API: WIFI_ConnectAP returned %d", ret);
 
-	LOG_DBG("WIFI_ConnectAP: %d", ret);
+	LOG_INF("WIFI_ConnectAP: %d", ret);
 
-	if (ret == eWiFiSuccess) {
+	switch (ret) {
+	case eWiFiSuccess:
 		dev->state = WIFI_STATE_COMPLETED;
 		erpc_wifi_ps_set_state_internal(true);
 		status = WIFI_STATUS_CONN_SUCCESS;
 		net_if_dormant_off(dev->net_iface);
-	} else {
+		break;
+	default:
+		dev->state = WIFI_STATE_DISCONNECTED;
 		status = WIFI_STATUS_CONN_FAIL;
+		break;
 	}
 
 	wifi_mgmt_raise_connect_result_event(dev->net_iface, status);
@@ -556,14 +695,39 @@ static int erpc_wifi_mgmt_disconnect(const struct device *dev)
 
 	LOG_DBG("erpc_wifi_mgmt_disconnect");
 
-	k_work_submit_to_queue(&data->workq, &data->disconnect_work);
+	switch (data->state) {
+	case WIFI_STATE_DISCONNECTED:
+	case WIFI_STATE_INACTIVE:
+		wifi_mgmt_raise_disconnect_result_event(data->net_iface,
+							WIFI_REASON_DISCONN_SUCCESS);
+		k_work_cancel(&data->disconnect_work);
+		return -EALREADY;
+	case WIFI_STATE_COMPLETED:
+		break;
+	default:
+		k_work_cancel(&data->disconnect_work);
+		return -EBUSY;
+	}
+
+	if (k_work_is_pending(&data->disconnect_work)) {
+		LOG_WRN("Disconnect worker is pending");
+		return -EBUSY;
+	}
+
+	int ret = k_work_submit_to_queue(&data->workq, &data->disconnect_work);
+	if (ret < 0) {
+		data->state = WIFI_STATE_DISCONNECTED;
+		wifi_mgmt_raise_disconnect_result_event(data->net_iface,
+							WIFI_REASON_DISCONN_SUCCESS);
+		return ret;
+	}
 
 	return 0;
 }
 
 static void erpc_wifi_mgmt_disconnect_work(struct k_work *work)
 {
-	int status = 0;
+	int status = WIFI_REASON_DISCONN_SUCCESS;
 	struct erpc_wifi_data *dev;
 	WIFIReturnCode_t ret;
 
@@ -571,22 +735,35 @@ static void erpc_wifi_mgmt_disconnect_work(struct k_work *work)
 
 	dev = CONTAINER_OF(work, struct erpc_wifi_data, disconnect_work);
 
-	erpc_wifi_lock();
-	ret = WIFI_Disconnect();
-	erpc_wifi_unlock();
+	for (int i = 0; i < OPERATION_RETRY_MAX; i++) {
+		erpc_wifi_lock();
+		ret = WIFI_Disconnect();
+		erpc_wifi_unlock();
+
+		if (ret != eWiFiBusy) {
+			break;
+		}
+
+		k_usleep(1);
+	}
 
 	LOG_DBG("WIFI_Disconnect: %d", ret);
 
-	if (ret != eWiFiSuccess) {
-		// TODO - there an enumerated error code that can be used here?
-		status = -1;
+	if (ret == eWiFiSuccess) {
+		dev->state = WIFI_STATE_DISCONNECTED;
+	} else {
+		LOG_ERR("Disconnect error: %d", ret);
+		status = WIFI_REASON_DISCONN_UNSPECIFIED;
 	}
 
-	dev->state = WIFI_STATE_DISCONNECTED;
+	dev->wifi_params_read = false;
 	erpc_wifi_ps_set_state_internal(false);
 
 	wifi_mgmt_raise_disconnect_result_event(dev->net_iface, status);
-	net_if_dormant_on(dev->net_iface);
+	net_if_ipv4_addr_rm(dev->net_iface, &dev->addr);
+	memset(&dev->addr, 0, sizeof(dev->addr));
+
+	k_sem_give(&dev->sem_cmd_process);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -629,6 +806,70 @@ static struct erpc_ps_cache g_ps;
 
 /* Delayable work: after TIMEOUT, allow RA6W1 to sleep */
 static struct k_work_delayable g_ps_enable_work;
+static void ps_send_param_to_ra(ra_wifi_ps_param_t p, uint32_t v)
+{
+	(void)ra6w1_wifi_ps_set_param(p, v);
+}
+
+static void erpc_wifi_iface_disable(const struct device *dev)
+{
+	struct erpc_wifi_data *data = dev->data;
+
+	LOG_INF("erpc_wifi_iface_disable");
+
+	(void)erpc_wifi_mgmt_disconnect(dev);
+
+	k_sem_take(&data->sem_cmd_process, K_MSEC(300));
+
+	erpc_wifi_deinit_erpc(data);
+	memset(&g_ps, 0, sizeof(g_ps));
+	net_mgmt_event_notify(NET_EVENT_IF_DOWN, data->net_iface);
+
+	data->state = WIFI_STATE_INTERFACE_DISABLED;
+
+	erpc_wifi_acquire_reset_pin();
+}
+
+// /* -------------------------------------------------------------------------- */
+// /* Wi-Fi Power Save (DPM)
+//  *
+//  */
+
+// /* ---------------- Wi-Fi Power Save mapping ----------------
+//  *
+//  * Customer expectation (Zephyr net_mgmt):
+//  *  - LISTEN_INTERVAL / WAKEUP_MODE / EXIT_STRATEGY / TIMEOUT are "parameters"
+//  *  - STATE (enable/disable) actually turns low-power behavior on/off
+//  *
+//  * IMPORTANT (this project):
+//  *  - Host owns enabling/disabling DPM sleep via RA6W1 PMGR sleep constraint.
+//  *  - RA6W1 wifi_ps_apply() only configures parameters (PTIM etc). It does not force sleep.
+//  *
+//  * TIMEOUT semantics:
+//  *  - We interpret params.timeout_ms as "delay before allowing RA6W1 to enter DPM sleep"
+//  *    after STATE is enabled (common app behavior: finish work window, then sleep).
+//  */
+
+// struct erpc_ps_cache {
+// 	uint32_t listen_interval;
+// 	uint32_t wakeup_mode;
+// 	uint32_t exit_strategy;
+// 	uint32_t timeout_ms;
+
+// 	bool li_set;
+// 	bool wm_set;
+// 	bool ex_set;
+// 	bool tmo_set;
+
+// 	bool enabled;          /* last STATE */
+// 	bool allow_sleep_sent; /* whether we have removed the sleep constraint */
+// 	bool socket_connect_pending;
+// };
+
+// static struct erpc_ps_cache g_ps;
+
+// /* Delayable work: after TIMEOUT, allow RA6W1 to sleep */
+// static struct k_work_delayable g_ps_enable_work;
 
 #define ERPC_WIFI_PS_DEFAULT_TIMEOUT_MS 1000U
 #define ERPC_WIFI_PS_DEFAULT_LISTEN_INTERVAL 10U
@@ -712,9 +953,32 @@ void erpc_wifi_ps_notify_socket_connect_start(void)
 	erpc_wifi_socket_tx_block_set(false, 0U);
 }
 
-static void ps_send_param_to_ra(ra_wifi_ps_param_t p, uint32_t v)
+// static void ps_send_param_to_ra(ra_wifi_ps_param_t p, uint32_t v)
+// {
+// 	(void)ra6w1_wifi_ps_set_param(p, v);
+// }
+
+static void erpc_wifi_ps_apply_default_params(void)
 {
-	(void)ra6w1_wifi_ps_set_param(p, v);
+	if (!g_ps.li_set) {
+		g_ps.listen_interval = ERPC_WIFI_PS_DEFAULT_LISTEN_INTERVAL;
+		g_ps.li_set = true;
+	}
+
+	if (!g_ps.wm_set) {
+		g_ps.wakeup_mode = (uint32_t)RA_WIFI_PS_WAKEUP_MODE_LISTEN_INTERVAL;
+		g_ps.wm_set = true;
+	}
+
+	if (!g_ps.ex_set) {
+		g_ps.exit_strategy = (uint32_t)WIFI_PS_EXIT_CUSTOM_ALGO;
+		g_ps.ex_set = true;
+	}
+
+	if (!g_ps.tmo_set) {
+		g_ps.timeout_ms = ERPC_WIFI_PS_DEFAULT_TIMEOUT_MS;
+		g_ps.tmo_set = true;
+	}
 }
 
 static void erpc_wifi_ps_push_defaults(void)
@@ -829,10 +1093,14 @@ int erpc_wifi_ping(uint32_t timeout_ms)
 }
 static int erpc_wifi_mgmt_set_power_save(const struct device *dev, struct wifi_ps_params *params)
 {
-	ARG_UNUSED(dev);
+	struct erpc_wifi_data *data = dev->data;
 
 	if (params == NULL) {
 		return -EINVAL;
+	}
+
+	if (data && data->state == WIFI_STATE_INTERFACE_DISABLED) {
+		return -EPERM;
 	}
 
 	LOG_INF("PS set: type=%u enabled=%u li=%u wm=%u exit=%u tmo=%u", params->type,
@@ -842,7 +1110,9 @@ static int erpc_wifi_mgmt_set_power_save(const struct device *dev, struct wifi_p
 	switch (params->type) {
 
 	case WIFI_PS_PARAM_LISTEN_INTERVAL:
-		g_ps.listen_interval = (uint32_t)params->listen_interval;
+		g_ps.listen_interval =
+			(params->listen_interval == 0U) ? ERPC_WIFI_PS_DEFAULT_LISTEN_INTERVAL :
+			(uint32_t)params->listen_interval;
 		g_ps.li_set = true;
 
 		ra6w1_wifi_ps_set_param(RA_WIFI_PS_PARAM_LISTEN_INTERVAL, g_ps.listen_interval);
@@ -875,7 +1145,8 @@ static int erpc_wifi_mgmt_set_power_save(const struct device *dev, struct wifi_p
 	}
 
 	case WIFI_PS_PARAM_TIMEOUT:
-		g_ps.timeout_ms = (uint32_t)params->timeout_ms;
+		g_ps.timeout_ms = (params->timeout_ms == 0U) ? ERPC_WIFI_PS_DEFAULT_TIMEOUT_MS :
+			(uint32_t)params->timeout_ms;
 		g_ps.tmo_set = true;
 
 		/* Forward to RA – RA PMGR policy decides post-TX behavior */
@@ -890,6 +1161,7 @@ static int erpc_wifi_mgmt_set_power_save(const struct device *dev, struct wifi_p
 		if (params->enabled == WIFI_PS_ENABLED) {
 
 			LOG_INF("PS STATE ENABLE");
+			erpc_wifi_ps_apply_default_params();
 			erpc_wifi_ps_set_state_internal(true);
 
 			return 0;
@@ -905,28 +1177,22 @@ static int erpc_wifi_mgmt_set_power_save(const struct device *dev, struct wifi_p
 	default:
 		return -ENOTSUP;
 	}
+
+	return 0;
 }
 
-static int erpc_wifi_mgmt_get_power_save_config(const struct device *dev,
-						 struct wifi_ps_config *config)
+static int erpc_wifi_mgmt_get_power_save_config(const struct device *dev, struct wifi_ps_config *config)
 {
-	ARG_UNUSED(dev);
-
-	if (config == NULL) {
-		return -EINVAL;
-	}
+	LOG_INF("get power save config");
 
 	config->num_twt_flows = 0;
 	memset(config->twt_flows, 0, sizeof(config->twt_flows));
 
-	config->ps_params.type = WIFI_PS_PARAM_STATE;
-	config->ps_params.enabled = g_ps.enabled ? WIFI_PS_ENABLED : WIFI_PS_DISABLED;
-	config->ps_params.listen_interval = (unsigned short)g_ps.listen_interval;
-	config->ps_params.wakeup_mode =
-		(g_ps.wakeup_mode == (uint32_t)RA_WIFI_PS_WAKEUP_MODE_LISTEN_INTERVAL) ?
-		WIFI_PS_WAKEUP_MODE_LISTEN_INTERVAL : WIFI_PS_WAKEUP_MODE_DTIM;
-	config->ps_params.exit_strategy = (enum wifi_ps_exit_strategy)g_ps.exit_strategy;
+	config->ps_params.listen_interval = (unsigned short) g_ps.listen_interval;
+	config->ps_params.wakeup_mode = (enum wifi_ps_wakeup_mode) g_ps.wakeup_mode;
 	config->ps_params.timeout_ms = g_ps.timeout_ms;
+	config->ps_params.exit_strategy = (enum wifi_ps_exit_strategy) g_ps.exit_strategy;
+	config->ps_params.enabled = g_ps.enabled;
 
 	return 0;
 }
@@ -1033,16 +1299,44 @@ static int erpc_wifi_mgmt_set_power_save(struct net_if *iface,
 int erpc_wifi_mgmt_iface_status(const struct device *dev, struct wifi_iface_status *status)
 {
 	struct erpc_wifi_data *data = dev->data;
+	static WIFIConnectionInfo_t connection_info = { 0 };
+	int8_t rssi = -127;
+	int ret = 0;
 
 	status->state = data->state;
-	status->ssid_len = data->drv_nwk_params.ucSSIDLength;
-	memcpy(status->ssid, data->drv_nwk_params.ucSSID,
-	       MIN(sizeof(status->ssid), status->ssid_len));
 	status->channel = data->drv_nwk_params.ucChannel;
-	status->security = drv_to_wifi_mgmt_sec(data->drv_nwk_params.xSecurity);
 	status->band = wifi_chan_to_band(data->drv_nwk_params.ucChannel);
 
-	return 0;
+	switch (status->state) {
+	case WIFI_STATE_DISCONNECTED:
+		data->wifi_params_read = false;
+		break;
+	case WIFI_STATE_COMPLETED:
+		if (!data->wifi_params_read) {
+			status->ssid_len = data->drv_nwk_params.ucSSIDLength;
+			memcpy(status->ssid, data->drv_nwk_params.ucSSID, status->ssid_len);
+			status->security = drv_to_wifi_mgmt_sec(data->drv_nwk_params.xSecurity);
+
+			memset(&connection_info, 0, sizeof(connection_info));
+			data->wifi_params_read = (eWiFiSuccess == WIFI_GetConnectionInfo(&connection_info));
+
+			memcpy(status->bssid, connection_info.ucBSSID, sizeof(connection_info.ucBSSID));
+		}
+
+		WIFI_GetRSSI(&rssi);
+
+		break;
+	case WIFI_STATE_AUTHENTICATING:
+		LOG_DBG("Device connect in progress...");
+		break;
+	default:
+		LOG_DBG("Device state: %d", status->state);
+		break;
+	}
+
+	status->rssi = (int)rssi;
+
+	return ret;
 }
 
 int erpc_wifi_mgmt_get_version(const struct device *dev, struct wifi_version *params)
@@ -1070,6 +1364,59 @@ static void erpc_wifi_iface_init(struct net_if *iface)
 	net_if_dormant_on(iface);
 }
 
+static int erpc_wifi_iface_enable(const struct net_if *iface, bool state)
+{
+	int ret = 0;
+
+	LOG_INF("WiFi Iface %p enable: %d", iface, state);
+
+	if (iface == NULL || iface->if_dev == NULL || iface->if_dev->dev == NULL) {
+		return -ENODEV;
+	}
+
+	struct erpc_wifi_data *data = iface->if_dev->dev->data;
+	struct net_if *net_iface = (struct net_if *)iface;
+
+	if (state) {
+		if (data->state != WIFI_STATE_INTERFACE_DISABLED) {
+			return -EALREADY;
+		}
+
+		ret = erpc_wifi_init_erpc(data);
+		if (ret != 0) {
+			LOG_ERR("Failed to initialize eRPC stack: %d (%s)", ret, strerror(-ret));
+			data->state = WIFI_STATE_INTERFACE_DISABLED;
+			return ret;
+		}
+		net_if_flag_clear(net_iface, NET_IF_NO_AUTO_START);
+		net_if_flag_set(net_iface, NET_IF_UP);
+		net_if_flag_set(net_iface, NET_IF_LOWER_UP);
+
+		erpc_wifi_release_reset_pin();
+		ret = erpc_wifi_reset();
+		gpio_remove_callback(data->n_int_gpio->port, &data->n_int_cb);
+
+		if (!ret) {
+			data->state = WIFI_STATE_INACTIVE;
+		} else {
+			erpc_wifi_deinit_erpc(data);
+		}
+
+		return 0;
+	}
+
+	if (data->state == WIFI_STATE_INTERFACE_DISABLED) {
+		return 0;
+	}
+
+	erpc_wifi_iface_disable(iface->if_dev->dev);
+	net_if_flag_set(net_iface, NET_IF_NO_AUTO_START);
+	net_if_flag_clear(net_iface, NET_IF_UP);
+	net_if_flag_clear(net_iface, NET_IF_LOWER_UP);
+
+	return 0;
+}
+
 static void erpc_wifi_client_error_handler(erpc_status_t err, uint32_t func_id)
 {
 	if (err > 0) {
@@ -1083,6 +1430,8 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 	if (!iface) {
 		return;
 	}
+
+	struct erpc_wifi_data *data = iface->if_dev->dev->data;
 
 	if (config->xIPAddress.xType == eWiFiIPAddressTypeV4) {
 		struct in_addr ip, netmask, gateway;
@@ -1121,6 +1470,7 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 		if (ifaddr) {
 			net_if_ipv4_set_netmask(iface, &netmask);
 			net_if_ipv4_set_gw(iface, &gateway);
+			memcpy(&data->addr, &ip, sizeof(data->addr));
 
 			LOG_INF("DHCP IPv4 applied: %s", ip_str);
 			LOG_INF("Netmask: %s, Gateway: %s", netmask_str, gateway_str);
@@ -1320,6 +1670,9 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		}
 
 		switch (event.event_id) {
+			case eDeviceBusy:
+			k_usleep(1);
+			continue;
 		case eNetworkInterfaceUp:
 			LOG_INF("Server: Network interface up");
 			net_mgmt_event_notify(NET_EVENT_IF_UP, iface);
@@ -1431,11 +1784,16 @@ static const struct wifi_mgmt_ops erpc_wifi_mgmt_ops = {
 static const struct net_wifi_mgmt_offload erpc_wifi_api = {
 	.wifi_iface.iface_api.init = erpc_wifi_iface_init,
 	.wifi_iface.get_type = erpc_wifi_offload_get_type,
+	.wifi_iface.enable = erpc_wifi_iface_enable,
 	.wifi_mgmt_api = &erpc_wifi_mgmt_ops,
 };
 
 static void erpc_wifi_deinit_erpc(struct erpc_wifi_data *data)
 {
+	if (data->n_int_gpio != NULL) {
+		gpio_remove_callback(data->n_int_gpio->port, &data->n_int_cb);
+	}
+
 	if (data->server_thread_id) {
 		k_thread_abort(data->server_thread_id);
 		data->server_thread_id = NULL;
@@ -1479,6 +1837,28 @@ static int erpc_wifi_init_erpc(struct erpc_wifi_data *data)
 	erpc_transport_t arbitrator;
 #endif
 	int ret;
+
+	if (data->n_int_gpio != NULL) {
+		if (!gpio_is_ready_dt(data->n_int_gpio)) {
+			return -ENODEV;
+		}
+
+		ret = gpio_pin_configure_dt(data->n_int_gpio, GPIO_INPUT);
+		if (ret < 0) {
+			return ret;
+		}
+
+		ret = gpio_pin_interrupt_configure_dt(data->n_int_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+		if (ret < 0) {
+			return ret;
+		}
+
+		gpio_init_callback(&data->n_int_cb, n_int_iface_active_cb, BIT(data->n_int_gpio->pin));
+		ret = gpio_add_callback(data->n_int_gpio->port, &data->n_int_cb);
+		if (ret < 0) {
+			return -EIO;
+		}
+	}
 
 	LOG_INF("eRPC init_erpc: transport init start");
 	/* Initialize the eRPC client infrastructure */
@@ -1541,6 +1921,14 @@ static int erpc_wifi_init_erpc(struct erpc_wifi_data *data)
 	}
 #endif
 
+// #if DT_INST_NODE_HAS_PROP(0, int_gpios)
+// 	ret = erpc_wifi_wait_interface_enable();
+// 	if (ret < 0) {
+// 		LOG_ERR("Interface enable wait timed out (%d)", ret);
+// 		return ret;
+// 	}
+// #endif
+
 	data->driver_state = ERPC_WIFI_DRIVER_INITIALIZED;
 
 	return 0;
@@ -1592,8 +1980,15 @@ static int erpc_wifi_init(const struct device *dev)
 
 	k_work_init_delayable(&g_ps_enable_work, ps_allow_sleep_work);
 
+#if DT_INST_NODE_HAS_PROP(0, int_gpios)
+	k_sem_init(&sem_if_enabled, 0, 1);
+	data->n_int_gpio = &n_int_gpio;
+#else
+	data->n_int_gpio = NULL;
+#endif
+
 	k_sem_init(&data->sem_if_ready, 0, 1);
-	//	k_sem_init(&data->sem_cmd_process, 0, 1);
+	k_sem_init(&data->sem_cmd_process, 0, 1);
 
 	/* Initialize the work queue */
 	k_work_queue_start(&data->workq, erpc_wifi_workq_stack,
@@ -1627,11 +2022,13 @@ static int erpc_wifi_init(const struct device *dev)
 	net_if_flag_set(data->net_iface, NET_IF_UP);
 	net_if_flag_set(data->net_iface, NET_IF_LOWER_UP);
 
+	erpc_wifi_reset();
+
 #else
- 	net_if_flag_set(data->net_iface, NET_IF_NO_AUTO_START);
+	net_if_flag_set(data->net_iface, NET_IF_NO_AUTO_START);
 	net_if_flag_clear(data->net_iface, NET_IF_UP);
 	/* Hold the reset pin to prevent Wi-Fi module from enabling to save power */
-//	erpc_wifi_acquire_reset_pin();
+	erpc_wifi_acquire_reset_pin();
 #endif
 
 //#if DT_NODE_HAS_STATUS(DT_ALIAS(rrq_gpios), okay)
@@ -1640,11 +2037,11 @@ static int erpc_wifi_init(const struct device *dev)
 	if (ret != 0) {
 		LOG_WRN("Failed to initialize GPIO wakeup pin, continuing without it");
 		g_gpio_wakeup_dev = NULL;
-	} else {
-		/* Wake RA6W1 before first eRPC transaction when server boots into Sleep2. */
-		LOG_INF("eRPC init: triggering wakeup");
-		erpc_wifi_gpio_trigger_wakeup();
-		k_msleep(100);  /* Allow module sufficient time to wake */
+	// } else {
+	// 	/* Wake RA6W1 before first eRPC transaction when server boots into Sleep2. */
+	// 	LOG_INF("eRPC init: triggering wakeup");
+	// 	erpc_wifi_gpio_trigger_wakeup();
+	// 	k_msleep(100);  /* Allow module sufficient time to wake */
 	}
 #else
 	LOG_DBG("rrq_gpios property not defined; GPIO wakeup unavailable");

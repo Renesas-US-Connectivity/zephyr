@@ -9,6 +9,7 @@
 
 #include <zephyr/net/wifi_mgmt.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/gpio.h>
 #include <wifi_host_to_ra_common.h>
 #include <wifi_host_to_ra_common.h>
 #include <erpc_server_setup.h>
@@ -30,6 +31,7 @@ enum erpc_wifi_driver_state {
 
 struct erpc_wifi_data {
 	struct net_if *net_iface;
+	struct in_addr addr;
 	enum wifi_iface_state state;
 	scan_result_cb_t scan_cb;
 	uint16_t scan_max_bss_cnt;
@@ -51,9 +53,13 @@ struct erpc_wifi_data {
 	struct k_work disconnect_work;
 	struct k_work reinit_work;
 
+	struct k_sem sem_cmd_process;
 	struct k_sem sem_if_ready;
+	struct gpio_dt_spec *n_int_gpio;
+	struct gpio_callback n_int_cb;
 
 	char fw_version_driver[ERPC_WIFI_DRV_FW_VER_LEN_MAX];
+	bool wifi_params_read;
 	bool ipv4_assigned;
 #if defined(CONFIG_NET_IPV6)
 	bool ipv6_assigned;

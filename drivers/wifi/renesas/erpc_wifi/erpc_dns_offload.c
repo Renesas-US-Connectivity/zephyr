@@ -12,6 +12,7 @@ static int offload_getaddrinfo(const char *node, const char *service,
 {
 	WIFIReturnCode_t server_status;
 	uint8_t actual_count = 0;
+	//int ret = DNS_EAI_SYSTEM; // Default to system error
 	int ret = DNS_EAI_SYSTEM; // Default to system error
 	struct zsock_addrinfo *head = NULL;
 	struct zsock_addrinfo *prev = NULL;
@@ -30,6 +31,7 @@ static int offload_getaddrinfo(const char *node, const char *service,
 	// 3. Check eRPC Transport Error
 	if (server_status != eWiFiSuccess) {
 		// Assume non-success means a transport error or unrecoverable LwIP error
+		//return DNS_EAI_SYSTEM;
 		return DNS_EAI_SYSTEM;
 	}
 
@@ -37,12 +39,15 @@ static int offload_getaddrinfo(const char *node, const char *service,
 	// NOTE: If your server uses a dedicated error_code field, you must check that instead.
 	if (server_status < 0) {
 		// If the return code is a negative LwIP error, map it to EAI_FAIL
-		return EAI_FAIL;
+		//return EAI_FAIL;
+		// If the return code is a negative LwIP error, map it to DNS_EAI_FAIL
+		return DNS_EAI_FAIL;
 	}
 
 	// 5. Check for No Results Found
 	if (actual_count == 0) {
-		return EAI_NODATA;
+		//return EAI_NODATA;
+		return DNS_EAI_NODATA;
 	}
 
 	// 6. Build the Zephyr linked list from the data received over eRPC
@@ -54,7 +59,8 @@ static int offload_getaddrinfo(const char *node, const char *service,
 		struct sockaddr_in *addr4 = k_calloc(1, sizeof(struct sockaddr_in));
 
 		if (!ai || !addr4) {
-			ret = EAI_MEMORY;
+			//ret = EAI_MEMORY;
+			ret = DNS_EAI_MEMORY;
 			goto cleanup; // Go to cleanup to free partially built list
 		}
 
