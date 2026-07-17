@@ -59,6 +59,11 @@ K_THREAD_STACK_DEFINE(event_monitor_stack, EVENT_MONITOR_STACK_SIZE);
 
 static struct gpio_dt_spec n_int_gpio = GPIO_DT_SPEC_GET(DT_DRV_INST(0), int_gpios);
 static struct k_sem sem_if_enabled;
+/* Signalled from the event monitor when the RA6W1 reports the interface ready
+ * (eNetworkInterfaceReady). erpc_wifi_reset() waits on this instead of a fixed
+ * boot delay. */
+static struct k_sem sem_iface_ready;
+static bool g_iface_ready;
 
 // Thread control structure
 static struct k_thread event_monitor_thread;
@@ -331,41 +336,19 @@ static void n_int_iface_active_cb(const struct device *dev, struct gpio_callback
  	   finish booting or we can wait for it to send us the reset complete
  	   eveent. At present, the SPI interface does not support sending the
  	   reset complete event so we have to just wait for boot to complete. */
- #if DT_INST_NODE_HAS_PROP(0, boot_duration_ms)
- 	k_sleep(K_MSEC(DT_INST_PROP_OR(0, boot_duration_ms, 0)));
- #else
- 	/*
- 	   While we are waiting for this sempahore the erpc_wifi_server_thread
- 	   is running and calling erpc_server_poll to check for any incoming
- 	   message. When a valid message is received the ra_erpc_server_event_handler
- 	   function is called. The eRPC middleware sets the nestingDetection flag
- 	   to true just before calling the hanlder and sets it to false when execution
- 	   of the handler is complete and it has returned.
- 
- 	   When the handler receives the eDeviceReset event it gives the
- 	   sem_if_ready sempaphore. This causes the thread running the handler
- 	   to immediately suspend and the RTOS starts running this init function
- 	   once again. It continues through this init function and starts running
- 	   main. In main the application calls a driver function, however this call
- 	   fails as when it calls the associated eRPC function a nesting error occurs
- 	   as the ra_erpc_server_event_handler has not yet had time to finish and so
- 	   the nestingDetection flag is still true...
- 
- 	   According to the Zephyr documentation, the system thread running this init
- 	   function has the highest priority and therefore we can simply increase the
- 	   priority of the erpc_wifi_server_thread to resolve this issue:
- 	   https://docs.zephyrproject.org/latest/kernel/services/threads/system_threads.html
- 	*/
- 	//err = k_sem_take(&erpc_wifi_driver_data->sem_if_ready, K_MSEC(CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT));
- 	
+ 	/* Wait for the RA6W1 to report readiness via the eNetworkInterfaceReady
+	 * event (delivered through erpc_get_server_event on the event-monitor
+	 * thread) instead of a fixed boot delay. A bounded timeout is used so a
+	 * server that never sends the event cannot hang boot forever. */
 #ifdef CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT
 	timeout = K_MSEC(CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT);
+#else
+	timeout = K_MSEC(10000);
 #endif
-	err = k_sem_take(&sem_if_enabled, timeout);
+	err = k_sem_take(&sem_iface_ready, timeout);
 	if (err) {
- 		return err;
- 	}
- #endif
+		return err;
+	}
  
 	return 0;
 }
@@ -2036,7 +2019,10 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 	while (event_monitor_running) {
 		memset(&event, 0, sizeof(event));
 		state = data->state;
-		if (state != WIFI_STATE_COMPLETED) {
+		/* Poll for events during boot too, so the eNetworkInterfaceReady
+		 * signal awaited by erpc_wifi_reset() is caught. Once the interface
+		 * is ready, keep the original behaviour (only poll once connected). */
+		if ((state != WIFI_STATE_COMPLETED) && g_iface_ready) {
 			k_sleep(K_SECONDS(2));
 			continue;
 		}
@@ -2071,7 +2057,11 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		}
 
 		// LOG_DBG("Event monitor: calling erpc_get_server_event"); // noisy during normal no-event polling
-		erpc_get_server_event(&event);
+		if (erpc_get_server_event(&event) != 0) {
+			erpc_wifi_unlock();
+			k_msleep(200);
+			continue;
+		}
 		erpc_wifi_unlock();
 		// LOG_DBG("Event monitor: erpc_get_server_event returned, event_id=%d", event.event_id); // noisy during normal no-event polling
 
@@ -2083,7 +2073,7 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		}
 
 		switch (event.event_id) {
-		case 0:
+		case eDeviceReset:
 			// LOG_DBG("Server: no pending event"); // less spam
 			break;
 
@@ -2106,6 +2096,11 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 			erpc_wifi_apply_dhcp_lease(iface, &event.event_data.xConfig);
 			break;
 
+		case eNetworkInterfaceReady:
+			LOG_INF("Server: Network interface ready");
+			g_iface_ready = true;
+			k_sem_give(&sem_iface_ready);
+			break;
 		default:
 			// LOG_INF("%s: Unknown event: %d", __func__, event.event_id); // too noisy for intermittent vendor events
 			LOG_DBG("%s: Unknown event: %d", __func__, event.event_id);
@@ -2379,6 +2374,8 @@ static int erpc_wifi_init(const struct device *dev)
 	g_ps.tmo_set = true;
 
 	k_sem_init(&sem_if_enabled, 0, 1);
+	k_sem_init(&sem_iface_ready, 0, 1);
+	g_iface_ready = false;
 	k_sem_init(&data->sem_if_ready, 0, 1);
 	k_sem_init(&data->sem_cmd_process, 0, 1);
 
