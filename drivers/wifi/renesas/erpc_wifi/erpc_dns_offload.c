@@ -21,7 +21,7 @@ static int offload_getaddrinfo(const char *node, const char *service,
 {
 	WIFIReturnCode_t server_status;
 	uint8_t actual_count = 0;
-	int ret = EAI_SYSTEM; // Default to system error
+	int ret = DNS_EAI_SYSTEM; // Default to system error
 	struct zsock_addrinfo *head = NULL;
 	struct zsock_addrinfo *prev = NULL;
 	WIFIIPAddress_t *result;
@@ -31,7 +31,7 @@ static int offload_getaddrinfo(const char *node, const char *service,
 
 	result = malloc(DNS_MAX_ADDRESSES * sizeof(WIFIIPAddress_t));
 	if (!result) {
-		return EAI_MEMORY;
+		return DNS_EAI_MEMORY;
 	}
 
 	// 2. Wake RA6W1 if in DPM sleep before issuing the blocking eRPC DNS call.
@@ -39,7 +39,7 @@ static int offload_getaddrinfo(const char *node, const char *service,
 	if (wake_ret != 0) {
 		LOG_WRN("DNS: wake-for-tx failed (%d), aborting getaddrinfo", wake_ret);
 		free(result);
-		return EAI_AGAIN;
+		return DNS_EAI_AGAIN;
 	}
 
 	// 3. Call the eRPC generated client stub.
@@ -58,17 +58,17 @@ static int offload_getaddrinfo(const char *node, const char *service,
 	/* Map known server/LwIP status first, then fallback. */
 	if (server_status < 0) {
 		free(result);
-		return EAI_AGAIN;
+		return DNS_EAI_AGAIN;
 	}
 	if (server_status != eWiFiSuccess) {
 		free(result);
-		return EAI_SYSTEM;
+		return DNS_EAI_SYSTEM;
 	}
 
 	// 5. Check for No Results Found
 	if (actual_count == 0) {
 		free(result);
-		return EAI_NODATA;
+		return DNS_EAI_NODATA;
 	}
 
 	// 6. Build the Zephyr linked list from the data received over eRPC
@@ -80,7 +80,7 @@ static int offload_getaddrinfo(const char *node, const char *service,
 		struct sockaddr_in *addr4 = k_calloc(1, sizeof(struct sockaddr_in));
 
 		if (!ai || !addr4) {
-			ret = EAI_MEMORY;
+			ret = DNS_EAI_MEMORY;
 			goto cleanup; // Go to cleanup to free partially built list
 		}
 
