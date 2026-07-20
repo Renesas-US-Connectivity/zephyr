@@ -70,10 +70,4 @@ config WIFI_ERPC_WIFI_SOFTAP_SUPPORT
 	help
 	  Option to enable Wi-Fi SoftAP functions in the Wi-Fi driver.
 
-config WIFI_ERPC_WIFI_RESET_TIMEOUT
-	int "TODO!!! - ms"
-	default 2000
-	help
-	  TODO - add description.
-
 endif # WIFI_ERPC_WIFI
