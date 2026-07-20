@@ -2181,7 +2181,7 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 
 		switch (event.event_id) {
 		case eDeviceReset:
-			// LOG_DBG("Server: no pending event"); // less spam
+			LOG_INF("Server: no pending event"); // less spam
 			k_sem_give(&sem_iface_ready);
 			break;
 
