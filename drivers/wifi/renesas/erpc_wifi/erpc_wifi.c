@@ -343,12 +343,11 @@ static void n_int_iface_active_cb(const struct device *dev, struct gpio_callback
 #ifdef CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT
 	timeout = K_MSEC(CONFIG_WIFI_ERPC_WIFI_RESET_TIMEOUT);
 #else
-	timeout = K_MSEC(10000);
-#endif
 	err = k_sem_take(&sem_iface_ready, timeout);
 	if (err) {
 		return err;
 	}
+#endif
  
 	return 0;
 }
@@ -2183,6 +2182,7 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		switch (event.event_id) {
 		case eDeviceReset:
 			// LOG_DBG("Server: no pending event"); // less spam
+			k_sem_give(&sem_iface_ready);
 			break;
 
 		case eNetworkInterfaceUp:
