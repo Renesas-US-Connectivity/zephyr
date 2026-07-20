@@ -12,6 +12,8 @@ LOG_MODULE_DECLARE(wifi_erpc_wifi, CONFIG_WIFI_LOG_LEVEL);
 void erpc_wifi_lock(void);
 void erpc_wifi_unlock(void);
 
+static void offload_freeaddrinfo(struct zsock_addrinfo *res);
+
 /* * The Offload Function (Using Compact Struct)
  */
 static int offload_getaddrinfo(const char *node, const char *service,
@@ -110,7 +112,9 @@ static int offload_getaddrinfo(const char *node, const char *service,
 	return 0;
 
 cleanup:
-
+	if (head) {
+		offload_freeaddrinfo(head);
+	}
 	// Note: No need to free 'result' as it was dynamically allocated.
 	free(result);
 	return ret;
