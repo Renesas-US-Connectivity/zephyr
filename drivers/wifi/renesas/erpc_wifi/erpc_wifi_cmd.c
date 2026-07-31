@@ -190,7 +190,7 @@ static void erpc_wifi_msg_handler_task(void *arg1, void *arg2, void *arg3)
 		 * an artefact; this delay lets it deassert before the poll task runs,
 		 * preventing a spurious notify_wakeup() that would re-hold the module awake. */
 		if (msg.cmd == ERPC_WIFI_PMGR_REMOVE_SLEEP_CONSTRAINT_CMD) {
-			k_msleep(500);
+			k_msleep(5);
 		}
 	}
 }

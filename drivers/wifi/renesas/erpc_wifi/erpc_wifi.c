@@ -255,8 +255,7 @@ static inline enum WIFISecurity_t wifi_mgmt_to_drv_sec(int wifi_mgmt_security_ty
 	case WIFI_SECURITY_TYPE_SAE:
 		return eWiFiSecurityWPA3;
 	case WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL:
-		/* eWiFiSecurityWPA2_WPA3_ext fails on WPA2-only APs; WPA2 is universally compatible */
-		return eWiFiSecurityWPA2;
+		return eWiFiSecurityWPA2_WPA3_ext;
 	default:
 		return eWiFiSecurityNotSupported;
 	}
@@ -707,8 +706,7 @@ static int erpc_wifi_mgmt_connect(const struct device *dev, struct wifi_connect_
 		       data->drv_nwk_params.xPassword.xWPA.ucLength);
 	}
 
-	/* Channel 0 or 255 = Zephyr "any channel"; RA6W1 uses 0 for auto-select */
-	data->drv_nwk_params.ucChannel = (params->channel == 255) ? 0 : params->channel;
+	data->drv_nwk_params.ucChannel = params->channel;
 
 	/* Copy BSSID if provided (non-zero) */
     static const uint8_t zero_bssid[WIFI_MAC_ADDR_LEN] = {0};
