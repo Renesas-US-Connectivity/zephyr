@@ -97,7 +97,7 @@ int erpc_wifi_send_cmd(erpc_wifi_cmd_t cmd, void *data, size_t size, int tout)
 	}
 
 	if (k_msgq_put(&cmd_msg_queue, &msg, K_NO_WAIT) == 0) {
-		LOG_INF("CMD[%d] queued (queue depth=%d)", cmd, k_msgq_num_used_get(&cmd_msg_queue));
+		LOG_DBG("CMD[%d] queued (queue depth=%d)", cmd, k_msgq_num_used_get(&cmd_msg_queue));
 
 		if (msg.sem && (ret = k_sem_take(msg.sem, timeout)) != 0) {
 			ret = -ETIMEDOUT;
@@ -110,7 +110,7 @@ int erpc_wifi_send_cmd(erpc_wifi_cmd_t cmd, void *data, size_t size, int tout)
 		if (msg.sem) {
 			k_free(msg.sem);
 		}
-		LOG_INF("CMD[%d] done ret=%d", cmd, ret);
+		LOG_DBG("CMD[%d] done ret=%d", cmd, ret);
 	} else {
 		free_cmd_msg_data(&msg);
 		LOG_ERR("Failed to enqueue command: %d (queue full)", cmd);
@@ -190,7 +190,7 @@ static void erpc_wifi_msg_handler_task(void *arg1, void *arg2, void *arg3)
 		 * an artefact; this delay lets it deassert before the poll task runs,
 		 * preventing a spurious notify_wakeup() that would re-hold the module awake. */
 		if (msg.cmd == ERPC_WIFI_PMGR_REMOVE_SLEEP_CONSTRAINT_CMD) {
-			k_msleep(5);
+			k_msleep(10);
 		}
 	}
 }
