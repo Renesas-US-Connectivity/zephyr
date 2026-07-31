@@ -25,11 +25,13 @@ LOG_MODULE_REGISTER(wifi_erpc_wifi, CONFIG_WIFI_LOG_LEVEL);
 #include <erpc_client_setup.h>
 #include <erpc_transport_setup.h>
 #include <erpc_mbf_setup.h>
-#include <c_wifi_host_to_ra_client.h>
+#include <c_erpcdemo_wifi_host_to_ra_client.h>
+#include <c_erpcdemo_ble_host_to_ra_client.h>
 #ifdef CONFIG_ERPC_TRANSPORT_UART
 #include <erpc_arbitrated_client_setup.h>
 #include <erpc_server_setup.h>
-#include <c_wifi_ra_to_host_server.h>
+#include <c_erpcdemo_wifi_ra_to_host_server.h>
+#include <c_erpcdemo_ble_ra_to_host_server.h>
 #endif
 
 #include "erpc_wifi.h"
@@ -651,7 +653,7 @@ static void erpc_wifi_server_thread(void *arg1, void *unused1, void *unused2)
 }
 
 // TODO- rename this erpc_wifi_server_event_handler and regenerate service files
-void ra_erpc_server_event_handler(const ra_erp_server_event_t * event)
+void ra_erpc_server_event_notify(const ra_erp_server_event_t * event)
 {
 	struct erpc_wifi_data *data = &erpc_wifi_driver_data;
 	struct in_addr ip_addr;
@@ -659,20 +661,20 @@ void ra_erpc_server_event_handler(const ra_erp_server_event_t * event)
 	struct in_addr netmask;
 
 	switch (event->event_id) {
-		case eDeviceReset:
+		case eEventDeviceResetPOR:
 		{
 			LOG_DBG("eDeviceReset");
 
 			data->reset_msg_received = true;
 			break;
 		}
-		case eNetworkInterfaceIPAssigned:
+		case eEventNetworkInterfaceIPAssigned:
 		{
 			LOG_DBG("eNetworkInterfaceIPAssigned");
 
-			ip_addr.s_addr = event->event_data.xConfig.xIPAddress.ulAddress[0];
-			gw_addr.s_addr = event->event_data.xConfig.xGateway.ulAddress[0];
-			netmask.s_addr = event->event_data.xConfig.xNetMask.ulAddress[0];
+			ip_addr.s_addr = event->event_data.xWPA.xIPAddress.ulAddress[0];
+			gw_addr.s_addr = event->event_data.xWPA.xGateway.ulAddress[0];
+			netmask.s_addr = event->event_data.xWPA.xNetMask.ulAddress[0];
 
 			net_if_ipv4_addr_add(data->net_iface, &ip_addr, NET_ADDR_DHCP, 0);
 			net_if_ipv4_set_gw(data->net_iface, &gw_addr);
@@ -720,22 +722,22 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 		}
 
 		switch (event.event_id) {
-		case eNetworkInterfaceUp:
+		case eEventNetworkInterfaceUp:
 			LOG_INF("Server: Network interface up");
 			// net_if_set_up(iface);
 			net_mgmt_event_notify(NET_EVENT_IF_UP, iface);
 			break;
 
-		case eNetworkInterfaceDown:
+		case eEventNetworkInterfaceDown:
 			LOG_INF("Server: Network interface down");
 			// net_if_set_down(iface);
 			net_mgmt_event_notify(NET_EVENT_IF_DOWN, iface);
 			// erpc_wifi_clear_ip();
 			break;
 
-		case eNetworkInterfaceIPAssigned:
+		case eEventNetworkInterfaceIPAssigned:
 			LOG_INF("Server: IP assigned - applying IP");
-			erpc_wifi_apply_dhcp_lease(iface, &event.event_data.xConfig);
+			erpc_wifi_apply_dhcp_lease(iface, &event.event_data.xWPA);
 			event_monitor_running = false;
 			break;
 
@@ -897,14 +899,18 @@ static int erpc_wifi_init(const struct device *dev)
 
 	/* Initialize eRPC client interface */
 	erpc_client_set_error_handler(client_manager, erpc_wifi_client_error_handler);
-	initwifi_client(client_manager);
+	initWiFiControlService_client(client_manager);
+	initBLEControlService_client(client_manager);
 
 #ifdef CONFIG_ERPC_TRANSPORT_UART
 	/* Initialize eRPC server interface */
 	data->erpc_server = erpc_server_init(arbitrator, mbf);
-	service = create_wifi_async_service();
+	service = create_WiFiEventService_service();
 
 	/* Add custom service implementation to the server */
+	erpc_add_service_to_server(data->erpc_server, service);
+
+	service = create_BLEEventService_service();
 	erpc_add_service_to_server(data->erpc_server, service);
 
 	k_thread_create(&erpc_wifi_server_thread_data,

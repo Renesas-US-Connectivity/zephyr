@@ -22,8 +22,8 @@ LOG_MODULE_REGISTER(erpc_wifi_socket_offload, CONFIG_WIFI_LOG_LEVEL);
 #include "sockets_internal.h"
 
 #include "erpc_wifi.h"
-#include "c_wifi_host_to_ra_client.h"
-#include "c_wifi_ra_to_host_client.h"
+#include <c_erpcdemo_wifi_host_to_ra_client.h>
+#include <c_erpcdemo_wifi_ra_to_host_server.h>
 
 #include <zephyr/net/socket.h>
 
@@ -261,9 +261,9 @@ static int erpc_wifi_socket_bind(void *obj, const struct sockaddr *addr, socklen
 		return ret;
 	}
 
-	ret = ra6w1_bind(sock->fd, &addr_erpc_wifi, sizeof(struct ra_erpc_sockaddr));
+ret = erpc_ra6fw_bind(sock->fd, &addr_erpc_wifi, sizeof(struct ra_erpc_sockaddr));
 
-	LOG_DBG("ra6w1_bind: %d", ret);
+	LOG_DBG("erpc_ra6fw_bind: %d", ret);
 
 	return ret;
 }
@@ -295,9 +295,9 @@ static int erpc_wifi_socket_connect(void *obj, const struct sockaddr *addr,
 		return ret;
 	}
 
-	ret = ra6w1_connect(sock->fd, &addr_erpc_wifi, sizeof(struct ra_erpc_sockaddr));
+ret = erpc_ra6fw_connect(sock->fd, &addr_erpc_wifi, sizeof(struct ra_erpc_sockaddr));
 
-	LOG_DBG("ra6w1_connect: %d", ret);
+	LOG_DBG("erpc_ra6fw_connect: %d", ret);
 
 	return ret;
 }
@@ -310,9 +310,9 @@ static int erpc_wifi_socket_listen(void *obj, int backlog)
 	LOG_DBG("fd: %d", sock->fd);
 	LOG_DBG("backlog: %d", backlog);
 
-	ret = ra6w1_listen(sock->fd, backlog);
+ret = erpc_ra6fw_listen(sock->fd, backlog);
 
-	LOG_DBG("ra6w1_listen: %d", ret);
+	LOG_DBG("erpc_ra6fw_listen: %d", ret);
 
 	return ret;
 }
@@ -330,8 +330,7 @@ static int erpc_wifi_socket_accept(void *obj, struct sockaddr *addr, socklen_t *
     fd = zvfs_reserve_fd();
 
     /* Accept returns file descriptor for new connected socket */
-	conn_fd = ra6w1_accept(sock->fd, &addr_erpc_wifi, addrlen);
-    LOG_DBG("ra6w1_accept: %d", conn_fd);
+       conn_fd = erpc_ra6fw_accept(sock->fd, &addr_erpc_wifi, addrlen);
 
 	if (conn_fd < 0) {
         zvfs_free_fd(fd);
@@ -381,9 +380,9 @@ static ssize_t erpc_wifi_socket_sendto(void *obj, const void *buf, size_t len, i
 			return ret;
 		}
 
-    	ret = ra6w1_sendto(sock->fd, buf, len, flags, &addr_erpc_wifi, sizeof(ra_erpc_sockaddr));
+ret = erpc_ra6fw_sendto(sock->fd, buf, len, flags, &addr_erpc_wifi, sizeof(ra_erpc_sockaddr));
 
-		LOG_DBG("ra6w1_sendto: %d", ret);
+		LOG_DBG("erpc_ra6fw_sendto: %d", ret);
 
 		if (dest_addr) {
 			LOG_DBG("family: %d", dest_addr->sa_family);
@@ -392,9 +391,9 @@ static ssize_t erpc_wifi_socket_sendto(void *obj, const void *buf, size_t len, i
 			LOG_DBG("addrlen: %d", addrlen);
 		}		
 	} else {
-    	ret = ra6w1_send(sock->fd, buf, len, flags);
+ret = erpc_ra6fw_send(sock->fd, buf, len, flags);
 
-		LOG_DBG("ra6w1_send: %d", ret);
+		LOG_DBG("erpc_ra6fw_send: %d", ret);
 	}
 
 	return ret;
@@ -434,11 +433,9 @@ static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, i
 	LOG_DBG("addrlen: %x", (uint32_t)addrlen);
 
 	if (src_addr) {
-		ret = ra6w1_recvfrom(sock->fd, buf, max_len, flags, (ra_erpc_sockaddr *)src_addr, addrlen);
+		ret = erpc_ra6fw_recvfrom(sock->fd, buf, max_len, flags, (ra_erpc_sockaddr *)src_addr, addrlen);
 
-		LOG_DBG("ra6w1_recvfrom: %d", ret);
-	
-		if (src_addr) {
+		LOG_DBG("erpc_ra6fw_recvfrom: %d", ret);
 			LOG_DBG("family: %d", src_addr->sa_family);
 			LOG_DBG("address: %d.%d.%d.%d", src_addr->data[2], src_addr->data[3], src_addr->data[4], src_addr->data[5]);
 			LOG_DBG("port: %d", ((struct sockaddr_in *)src_addr)->sin_port);
@@ -455,9 +452,9 @@ static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, i
 			src_addr->sa_family = AF_INET;
 		}
 	} else {
-		ret = ra6w1_recv(sock->fd, buf, max_len, flags);
+		ret = erpc_ra6fw_recv(sock->fd, buf, max_len, flags);
 
-		LOG_DBG("ra6w1_recvfrom: %d", ret);
+		LOG_DBG("erpc_ra6fw_recv: %d", ret);
 	}
 
 	return ret;
@@ -484,10 +481,10 @@ static int erpc_wifi_socket_getsockopt(void *obj, int level, int optname,
 		return ret;
 	}
 
-	ret = ra6w1_getsockopt(sock->fd, level_erpc_wifi, optname_erpc_wifi,
+ret = erpc_ra6fw_getsockopt(sock->fd, level_erpc_wifi, optname_erpc_wifi,
 				optval, optlen);
 
-	LOG_DBG("ra6w1_getsockopt: %d", ret);
+	LOG_DBG("erpc_ra6fw_getsockopt: %d", ret);
 
 	return ret;
 }
@@ -513,10 +510,10 @@ static int erpc_wifi_socket_setsockopt(void *obj, int level, int optname,
 		return ret;
 	}
 
-	ret = ra6w1_setsockopt(sock->fd, level_erpc_wifi, 
+ret = erpc_ra6fw_setsockopt(sock->fd, level_erpc_wifi,
 				optname_erpc_wifi, (uint32_t *)optval, optlen);
 
-	LOG_DBG("ra6w1_setsockopt: %d", ret);
+	LOG_DBG("erpc_ra6fw_setsockopt: %d", ret);
 
 	return ret;
 }
@@ -540,9 +537,9 @@ static int erpc_wifi_socket_close(void *obj)
 
 	erpc_wifi_socket_free(sock->fd);
 
-	ret = ra6w1_close(sock->fd);
+ret = erpc_ra6fw_close(sock->fd);
 
-	LOG_DBG("ra6w1_close: %d", ret);
+	LOG_DBG("erpc_ra6fw_close: %d", ret);
 
 	return ret;
 }
@@ -757,9 +754,9 @@ static int erpc_wifi_socket_create(int family, int type, int proto)
 		return err;
 	}
 
-	sock = ra6w1_socket(family_erpc_wifi, type, proto);
+sock = erpc_ra6fw_socket(family_erpc_wifi, type, proto);
 
-	LOG_DBG("ra6w1_socket: %d", sock);
+	LOG_DBG("erpc_ra6fw_socket: %d", sock);
 
 	if (sock < 0) {
 		zvfs_free_fd(fd);

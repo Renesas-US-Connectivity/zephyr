@@ -5,13 +5,21 @@ if(CONFIG_WIFI_ERPC_WIFI)
   zephyr_library_sources(
     erpc_wifi.c
 	erpc_wifi_socket_offload.c
-	service/c_wifi_host_to_ra_client.cpp
-	service/wifi_host_to_ra_client.cpp
-	service/wifi_host_to_ra_interface.cpp
+    service/wifi/c_erpcdemo_wifi_host_to_ra_client.cpp
+    service/wifi/erpcdemo_wifi_host_to_ra_client.cpp
+    service/wifi/erpcdemo_wifi_host_to_ra_interface.cpp
 
-    service/c_wifi_ra_to_host_server.cpp
-	service/wifi_ra_to_host_server.cpp
-	service/wifi_ra_to_host_interface.cpp
+    service/wifi/c_erpcdemo_wifi_ra_to_host_server.cpp
+    service/wifi/erpcdemo_wifi_ra_to_host_server.cpp
+    service/wifi/erpcdemo_wifi_ra_to_host_interface.cpp
+
+    service/ble/c_erpcdemo_ble_host_to_ra_client.cpp
+    service/ble/erpcdemo_ble_host_to_ra_client.cpp
+    service/ble/erpcdemo_ble_host_to_ra_interface.cpp
+
+    service/ble/c_erpcdemo_ble_ra_to_host_server.cpp
+    service/ble/erpcdemo_ble_ra_to_host_server.cpp
+    service/ble/erpcdemo_ble_ra_to_host_interface.cpp
   )
 
   zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_UART erpc_wifi_transport_uart.c)
@@ -19,7 +27,8 @@ if(CONFIG_WIFI_ERPC_WIFI)
 
   zephyr_include_directories(
 	.
-	service
+	service/wifi
+	service/ble
 	${ZEPHYR_BASE}/subsys/net/lib/sockets
   )
 endif()

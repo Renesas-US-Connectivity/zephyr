@@ -9,7 +9,7 @@
 
 #include <zephyr/net/wifi_mgmt.h>
 #include <zephyr/drivers/spi.h>
-#include <wifi_host_to_ra_common.h>
+#include <erpcdemo_wifi_host_to_ra_common.h>
 #include <erpc_server_setup.h>
 
 #ifdef __cplusplus
