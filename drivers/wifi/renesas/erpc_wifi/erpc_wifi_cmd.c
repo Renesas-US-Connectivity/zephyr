@@ -14,7 +14,15 @@ K_THREAD_STACK_DEFINE(msg_task_stack, MSG_TASK_STACK_SIZE);
 static struct k_thread msgq_thread;
 static k_tid_t msgq_task_tid;
 
-K_MSGQ_DEFINE(cmd_msg_queue, sizeof(erpc_wifi_msg_data_t), ERPC_WIFI_MSG_MAX, 4);
+K_MSGQ_DEFINE(cmd_msg_queue,     sizeof(erpc_wifi_msg_data_t), ERPC_WIFI_MSG_MAX, 4);
+K_MSGQ_DEFINE(cmd_msg_queue_low, sizeof(erpc_wifi_msg_data_t), ERPC_WIFI_MSG_MAX, 4);
+
+/* Background event polls must not block user-visible API calls */
+static bool is_low_prio_cmd(erpc_wifi_cmd_t cmd)
+{
+	return cmd == EPRC_WIFI_GET_SOCKET_EVT_CMD ||
+	       cmd == EPRC_WIFI_GET_SERVER_EVT_CMD;
+}
 
 typedef struct {
 	erpc_wifi_cmd_t cmd;
@@ -96,8 +104,11 @@ int erpc_wifi_send_cmd(erpc_wifi_cmd_t cmd, void *data, size_t size, int tout)
 		k_sem_init(msg.sem, 0, 1);
 	}
 
-	if (k_msgq_put(&cmd_msg_queue, &msg, K_NO_WAIT) == 0) {
-		LOG_DBG("CMD[%d] queued (queue depth=%d)", cmd, k_msgq_num_used_get(&cmd_msg_queue));
+	struct k_msgq *q = is_low_prio_cmd(cmd) ? &cmd_msg_queue_low : &cmd_msg_queue;
+	if (k_msgq_put(q, &msg, K_NO_WAIT) == 0) {
+		LOG_DBG("CMD[%d] queued (hi=%d lo=%d)", cmd,
+			k_msgq_num_used_get(&cmd_msg_queue),
+			k_msgq_num_used_get(&cmd_msg_queue_low));
 
 		if (msg.sem && (ret = k_sem_take(msg.sem, timeout)) != 0) {
 			ret = -ETIMEDOUT;
@@ -154,10 +165,11 @@ static void erpc_wifi_msg_handler_task(void *arg1, void *arg2, void *arg3)
 	erpc_wifi_msg_data_t msg = {0};
 
 	while (1) {
-		/* Wait for message - blocks here until message available */
-		if (k_msgq_get(&cmd_msg_queue, &msg, K_FOREVER) != 0) {
-			LOG_ERR("Failed to get message from queue");
-			continue;
+		/* High-priority queue first; block briefly on low-priority if nothing pending */
+		if (k_msgq_get(&cmd_msg_queue, &msg, K_NO_WAIT) != 0) {
+			if (k_msgq_get(&cmd_msg_queue_low, &msg, K_MSEC(5)) != 0) {
+				continue;
+			}
 		}
 
 		/* Dispatch to registered handler */
@@ -185,12 +197,12 @@ static void erpc_wifi_msg_handler_task(void *arg1, void *arg2, void *arg3)
 			k_sem_give(msg.sem);
 		}
 
-		/* After removing the sleep constraint the PS state machine immediately
-		 * transitions to ASLEEP. The SPI completion leaves SRDY briefly high as
-		 * an artefact; this delay lets it deassert before the poll task runs,
-		 * preventing a spurious notify_wakeup() that would re-hold the module awake. */
 		if (msg.cmd == ERPC_WIFI_PMGR_REMOVE_SLEEP_CONSTRAINT_CMD) {
-			k_msleep(10);
+			/* Wait for SRDY to deassert, confirming the SPI artifact has cleared */
+			int64_t deadline = k_uptime_get() + 50;
+			while (erpc_wifi_transport_slave_ready() && k_uptime_get() < deadline) {
+				k_msleep(1);
+			}
 		}
 	}
 }

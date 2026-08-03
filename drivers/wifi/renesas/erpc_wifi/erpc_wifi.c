@@ -68,6 +68,7 @@ static k_tid_t event_monitor_tid;
 static K_MUTEX_DEFINE(g_erpc_wifi_mutex);
 // Thread status
 static bool event_monitor_running = false;
+static struct k_sem event_monitor_sem;
 
 // TODO can this be static?
 struct erpc_wifi_data erpc_wifi_driver_data;
@@ -2228,11 +2229,18 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 			break;
 		}
 
-		/* Small sleep to prevent busy-polling in case erpc_get_server_event is non-blocking
-		 * and no events are pending.
-		 */
-		k_msleep(200);
+		/* Chain immediately if an event was returned; else wait for SRDY or timeout */
+		if (event.event_id != 0) {
+			k_sem_give(&event_monitor_sem);
+		} else {
+			(void)k_sem_take(&event_monitor_sem, K_MSEC(500));
+		}
 	}
+}
+
+void erpc_wifi_notify_event_monitor(void)
+{
+	k_sem_give(&event_monitor_sem);
 }
 #endif
 
@@ -2249,6 +2257,7 @@ int erpc_wifi_start_event_monitor(struct erpc_wifi_data *data)
 	data->ipv6_assigned = false;
 #endif
 	event_monitor_running = true;
+	k_sem_init(&event_monitor_sem, 0, 1);
 
 	// Create and start the thread
 	event_monitor_tid = k_thread_create(&event_monitor_thread, event_monitor_stack,
