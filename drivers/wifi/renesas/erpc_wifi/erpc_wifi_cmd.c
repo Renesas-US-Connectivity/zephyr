@@ -193,10 +193,7 @@ static void erpc_wifi_msg_handler_task(void *arg1, void *arg2, void *arg3)
 
 		if (msg.cmd == ERPC_WIFI_PMGR_REMOVE_SLEEP_CONSTRAINT_CMD) {
 			/* Wait for SRDY to deassert, confirming the SPI artifact has cleared */
-			int64_t deadline = k_uptime_get() + 50;
-			while (erpc_wifi_transport_slave_ready() && k_uptime_get() < deadline) {
-				k_msleep(1);
-			}
+			k_msleep(1);
 		}
 	}
 }

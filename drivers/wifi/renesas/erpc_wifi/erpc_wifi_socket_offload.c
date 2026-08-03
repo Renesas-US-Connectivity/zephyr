@@ -461,7 +461,6 @@ static void erpc_wifi_socket_poll_task(void *arg1, void *arg2, void *arg3)
 		while (activity) {
 			activity = false;
 			bool any_polled = false;
-			bool any_events = false;
 
 			for (int i = 0; i < ERPC_WIFI_MAX_SOCKETS; i++) {
 				struct erpc_wifi_socket *sock = &sockets[i];
@@ -533,7 +532,6 @@ static void erpc_wifi_socket_poll_task(void *arg1, void *arg2, void *arg3)
 															  &ev_fd, sizeof(ev_fd), -1);
 					if (events != 0 && events != UINT32_MAX) {
 						//LOG_WRN("poll_task: fd=%d events=0x%x", sock->fd, events);
-						any_events = true;
 					}
 
 					erpc_wifi_pmgr_ram_release(0);
@@ -606,9 +604,6 @@ static void erpc_wifi_socket_poll_task(void *arg1, void *arg2, void *arg3)
 				 * (because module is asleep), break the loop to prevent a 100% CPU
 				 * spin-loop. The SRDY interrupt or timeout will wake us later. */
 				activity = false;
-			} else if (any_polled && !any_events && !activity) {
-				/* No events and no waiting sockets; yield before next outer wait */
-				k_msleep(10);
 			}
 		}
 	}
@@ -2477,7 +2472,6 @@ static void erpc_wifi_offload_srdy_callback(void)
 	/* Wake both the poll task and event monitor on SRDY interrupt */
 	extern struct k_sem poll_task_sem;
 	k_sem_give(&poll_task_sem);
-	erpc_wifi_notify_event_monitor();
 }
 
 extern void erpc_wifi_dns_offload_init(void);
