@@ -606,10 +606,9 @@ static void erpc_wifi_socket_poll_task(void *arg1, void *arg2, void *arg3)
 				 * (because module is asleep), break the loop to prevent a 100% CPU
 				 * spin-loop. The SRDY interrupt or timeout will wake us later. */
 				activity = false;
-			} else if (any_polled && !any_events) {
-				/* All sockets polled but module had nothing ready; yield to high-prio */
+			} else if (any_polled && !any_events && !activity) {
+				/* No events and no waiting sockets; yield before next outer wait */
 				k_msleep(10);
-				activity = false;
 			}
 		}
 	}
