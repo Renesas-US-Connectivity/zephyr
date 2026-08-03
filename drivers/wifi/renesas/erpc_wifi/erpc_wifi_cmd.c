@@ -106,9 +106,6 @@ int erpc_wifi_send_cmd(erpc_wifi_cmd_t cmd, void *data, size_t size, int tout)
 
 	struct k_msgq *q = is_low_prio_cmd(cmd) ? &cmd_msg_queue_low : &cmd_msg_queue;
 	if (k_msgq_put(q, &msg, K_NO_WAIT) == 0) {
-		LOG_DBG("CMD[%d] queued (hi=%d lo=%d)", cmd,
-			k_msgq_num_used_get(&cmd_msg_queue),
-			k_msgq_num_used_get(&cmd_msg_queue_low));
 
 		if (msg.sem && (ret = k_sem_take(msg.sem, timeout)) != 0) {
 			ret = -ETIMEDOUT;
@@ -121,7 +118,6 @@ int erpc_wifi_send_cmd(erpc_wifi_cmd_t cmd, void *data, size_t size, int tout)
 		if (msg.sem) {
 			k_free(msg.sem);
 		}
-		LOG_DBG("CMD[%d] done ret=%d", cmd, ret);
 	} else {
 		free_cmd_msg_data(&msg);
 		LOG_ERR("Failed to enqueue command: %d (queue full)", cmd);
@@ -180,8 +176,6 @@ static void erpc_wifi_msg_handler_task(void *arg1, void *arg2, void *arg3)
 			if (msg.cmd_ret) {
 				*msg.cmd_ret = ret;
 			}
-
-			LOG_DBG("Command %d processed, result: %d", msg.cmd, ret);
 		} else {
 			LOG_ERR("No handler registered for command %d", msg.cmd);
 			if (msg.cmd_ret) {
