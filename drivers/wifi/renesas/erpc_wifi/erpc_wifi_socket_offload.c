@@ -27,6 +27,7 @@ uint32_t get_socket_events(int32_t fd);
 extern bool erpc_wifi_ps_is_enabled(void);
 
 extern void erpc_wifi_gpio_trigger_wakeup(void);
+extern void erpc_wifi_gpio_wakeup_pulse_fast(void);
 
 
 static atomic_t g_erpc_tx_blocked;
@@ -103,6 +104,7 @@ static int erpc_wifi_ensure_awake_tx(uint32_t job_id)
 
 	/* Proactively pulse Wakeup GPIO */
 	erpc_wifi_gpio_trigger_wakeup();
+	last_pulse = k_uptime_get(); /* update after the pulse so retry timer starts from here */
 
 	for (;;) {
 		int sr = erpc_wifi_transport_slave_ready();
