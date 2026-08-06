@@ -43,7 +43,8 @@ erpc_transport_t erpc_wifi_transport_init(void)
 		return NULL;
 	} 
 
-	return erpc_transport_zephyr_spi_master_init((void *)&cfg->bus, (void *)&cfg->n_int);
+	erpc_transport_t transport = erpc_transport_zephyr_spi_master_init((void *)&cfg->bus, (void *)&cfg->n_int);
+	return transport;
 }
 
 void erpc_wifi_transport_deinit(erpc_transport_t transport)
@@ -62,7 +63,9 @@ int erpc_wifi_transport_slave_ready(void)
 	}
 
 	int v = gpio_pin_get_dt(g_slave_ready_gpio);
+
 	if (v < 0) {
+		//printf("Failed to read Slave-ready GPIO: %d\n", v);
 		return false;
 	}
 
@@ -90,12 +93,15 @@ void erpc_transport_register_srdy_cb(erpc_transport_srdy_cb_t cb)
 	g_srdy_cb = cb;
 
 	if (g_slave_ready_gpio && cb) {
+		if (gpio_pin_configure_dt(g_slave_ready_gpio, GPIO_INPUT) != 0) {
+			return;
+		}
+
+		if (gpio_pin_interrupt_configure_dt(g_slave_ready_gpio, GPIO_INT_EDGE_TO_ACTIVE) != 0) {
+			return;
+		}
+
 		gpio_init_callback(&srdy_cb_data, srdy_gpio_callback_handler, BIT(g_slave_ready_gpio->pin));
 		gpio_add_callback(g_slave_ready_gpio->port, &srdy_cb_data);
-
-		/* If SRDY is already high, there may be no new edge; kick callback once. */
-		if (gpio_pin_get_dt(g_slave_ready_gpio) > 0) {
-			cb();
-		}
 	}
 }

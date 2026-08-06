@@ -1,16 +1,8 @@
-#include <zephyr/logging/log.h>
-LOG_MODULE_DECLARE(wifi_erpc_wifi, CONFIG_WIFI_LOG_LEVEL);
-
 #include <zephyr/net/socket_offload.h>
 #include <zephyr/net/socket.h>
-#include <zephyr/net/wifi.h>
 #include "erpc_wifi.h"
+#include "erpc_wifi_cmd.h"
 #include "c_wifi_host_to_ra_client.h"
-#include "c_wifi_ra_to_host_client.h"
-#include <c_wifi_host_to_ra_client.h>
-
-void erpc_wifi_lock(void);
-void erpc_wifi_unlock(void);
 
 /* * The Offload Function (Using Compact Struct)
  */
@@ -19,13 +11,12 @@ static void offload_freeaddrinfo(struct zsock_addrinfo *res);
 static int offload_getaddrinfo(const char *node, const char *service,
 			       const struct zsock_addrinfo *hints, struct zsock_addrinfo **res)
 {
-	WIFIReturnCode_t server_status;
 	uint8_t actual_count = 0;
-	int ret = DNS_EAI_SYSTEM; // Default to system error
+	int ret = DNS_EAI_SYSTEM;
 	struct zsock_addrinfo *head = NULL;
 	struct zsock_addrinfo *prev = NULL;
 	WIFIIPAddress_t *result;
-	;
+
 	// 1. CRITICAL: Initialize output pointer to NULL to prevent Bus Fault on error
 	*res = NULL;
 
@@ -34,33 +25,19 @@ static int offload_getaddrinfo(const char *node, const char *service,
 		return DNS_EAI_MEMORY;
 	}
 
-	// 2. Wake RA6W1 if in DPM sleep before issuing the blocking eRPC DNS call.
-	int wake_ret = erpc_wifi_wake_for_tx();
-	if (wake_ret != 0) {
-		LOG_WRN("DNS: wake-for-tx failed (%d), aborting getaddrinfo", wake_ret);
-		free(result);
-		return DNS_EAI_AGAIN;
-	}
+	// 2. Call the eRPC generated client stub via cmd queue (serialized with all other eRPC ops)
+	erpc_wifi_dns_addrinfo_t dns_addrinfo = {
+		.node           = node,
+		.actual_count   = &actual_count,
+		.result         = result,
+		.max_dns_addreses = DNS_MAX_ADDRESSES,
+	};
 
-	// 3. Call the eRPC generated client stub.
-	// The addresses buffer is filled by the eRPC framework.
-	
-	erpc_wifi_lock();
-    server_status = ra6w1_dns_getaddrinfo(node, result, DNS_MAX_ADDRESSES, &actual_count);
-    erpc_wifi_unlock();
-	
-	// Release RAM constraint and mark DPM job as complete
-	erpc_wifi_pmgr_ram_release(ERPC_PMGR_JOB_ID_SEND);
+	int server_status = erpc_wifi_send_cmd(EPRC_WIFI_GET_DNS_ADDR_INFO_CMD,
+					       &dns_addrinfo, sizeof(dns_addrinfo), -1);
 
-	// Re-arm the PS sleep timer now that the DNS eRPC round-trip is done.
-	erpc_wifi_ps_notify_wakeup();
-
-	/* Map known server/LwIP status first, then fallback. */
-	if (server_status < 0) {
-		free(result);
-		return DNS_EAI_AGAIN;
-	}
-	if (server_status != eWiFiSuccess) {
+	// 3. Check result
+	if (server_status != 0) {
 		free(result);
 		return DNS_EAI_SYSTEM;
 	}
@@ -70,8 +47,6 @@ static int offload_getaddrinfo(const char *node, const char *service,
 		free(result);
 		return DNS_EAI_NODATA;
 	}
-
-	// 6. Build the Zephyr linked list from the data received over eRPC
 	for (uint8_t i = 0; i < actual_count; i++) {
 		WIFIIPAddress_t *ip_addr_t = &result[i];
 
@@ -144,8 +119,5 @@ static const struct socket_dns_offload dns_ops = {
 
 void erpc_wifi_dns_offload_init(void)
 {
-	printk("Registering eRPC WiFi DNS offload\n");
 	socket_offload_dns_register(&dns_ops);
-	socket_offload_dns_enable(true);
-	printk("eRPC WiFi DNS offload enabled\n");
 }
