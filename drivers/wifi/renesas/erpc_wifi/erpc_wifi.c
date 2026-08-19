@@ -1042,7 +1042,7 @@ void erpc_wifi_ps_wait_awake_rx(void)
 		/* If the module is not AWAKE, wait up to 500ms bounded timeout */
 		uint32_t events = k_event_wait(&erpc_ps_event, ERPC_PS_EVENT_AWAKE, false, K_MSEC(500));
 		if (events == 0) {
-			LOG_WRN("PS wait_awake_rx: 500ms timeout expired waiting for AWAKE");
+			LOG_DBG("PS wait_awake_rx: 500ms timeout expired waiting for AWAKE");
 		}
 	}
 }
@@ -2551,6 +2551,8 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 	struct erpc_wifi_data *data = (struct erpc_wifi_data *)arg1;
 	struct ra_erp_server_event_t event;
 	enum wifi_iface_state state;
+	int64_t server_evt_rate_window_start = k_uptime_get();
+	uint32_t server_evt_rate_count = 0U;
 
 	while (event_monitor_running) {
 		memset(&event, 0, sizeof(event));
@@ -2618,6 +2620,12 @@ static void erpc_wifi_server_event_monitor_thread(void *arg1, void *arg2, void *
 			erpc_wifi_server_evt_t evt_msg = { .event = &event };
 			(void)erpc_wifi_send_cmd(EPRC_WIFI_GET_SERVER_EVT_CMD,
 									 &evt_msg, sizeof(evt_msg), -1);
+			server_evt_rate_count++;
+			if ((k_uptime_get() - server_evt_rate_window_start) >= 1000) {
+				LOG_DBG("poll_rate: get_server_event cps=%u", server_evt_rate_count);
+				server_evt_rate_count = 0U;
+				server_evt_rate_window_start = k_uptime_get();
+			}
 		}
 		// LOG_DBG("Event monitor: erpc_get_server_event returned, event_id=%d", event.event_id); // noisy during normal no-event polling
 

@@ -2,6 +2,7 @@
 
 #include "erpc_wifi.h"
 #include "erpc_wifi_socket_offload.h"
+#include "erpc_wifi_transport.h"
 #include <c_wifi_host_to_ra_client.h>
 #include <zephyr/net/socket.h>
 
@@ -182,6 +183,7 @@ static void erpc_wifi_msg_handler_task(void *arg1, void *arg2, void *arg3)
 			if (msg.cmd < ERPC_WIFI_LAST_CMD && erpc_wifi_socket_handlers[msg.cmd].h) {
 				bool server_evt_query =
 					(msg.cmd == EPRC_WIFI_GET_SERVER_EVT_CMD);
+				int64_t exec_start = k_uptime_get();
 
 				if (server_evt_query) {
 					erpc_wifi_offload_server_evt_query_begin();
@@ -192,9 +194,16 @@ static void erpc_wifi_msg_handler_task(void *arg1, void *arg2, void *arg3)
 				 * host-initiated eRPC transaction, so response SRDY must not be
 				 * classified as an autonomous DPM wake.
 				 */
+									LOG_DBG("CMD exec start: cmd=%d thread=%s",
+					msg.cmd, k_thread_name_get(k_current_get()));
 				erpc_wifi_offload_host_erpc_begin();
+				erpc_wifi_transport_lock();
 				int ret = erpc_wifi_socket_handlers[msg.cmd].h(msg.data);
+				erpc_wifi_transport_unlock();
 				erpc_wifi_offload_host_erpc_end();
+				LOG_DBG("CMD exec done: cmd=%d ret=%d elapsed_ms=%lld",
+					msg.cmd, ret,
+					(long long)(k_uptime_get() - exec_start));
 
 				if (server_evt_query) {
 					erpc_wifi_offload_server_evt_query_end();
@@ -240,7 +249,7 @@ int erpc_wifi_cmd_init(void)
 
 	k_thread_name_set(msgq_task_tid, "erpc_wifi_msg_handler");
 
-	LOG_INF("erpc_wifi message queue initialized (capacity: %d)", ERPC_WIFI_MSG_MAX);
+	LOG_DBG("erpc_wifi message queue initialized (capacity: %d)", ERPC_WIFI_MSG_MAX);
 
 	return 0;
 }

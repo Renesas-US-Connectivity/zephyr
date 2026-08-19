@@ -12,23 +12,62 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
 #include <erpc_transport_setup.h>
-#include <erpc_transport_setup.h>
-#include <zephyr/kernel.h>
 #include <zephyr/toolchain.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/logging/log.h>
 #include "erpc_wifi_transport.h"
+
+LOG_MODULE_DECLARE(wifi_erpc_wifi, CONFIG_WIFI_LOG_LEVEL);
 
 struct erpc_wifi_spi_config {
 	struct gpio_dt_spec n_int;
 	struct spi_dt_spec bus;
 };
 static const struct gpio_dt_spec *g_slave_ready_gpio;
+static erpc_transport_t g_active_transport;
 static const struct erpc_wifi_spi_config erpc_wifi_config_spi0 = {
 	.n_int = GPIO_DT_SPEC_INST_GET(0, int_gpios),
 	.bus = SPI_DT_SPEC_INST_GET(0, SPI_OP_MODE_MASTER | SPI_TRANSFER_MSB | SPI_MODE_CPOL | SPI_WORD_SET(8), 0)
 };
+
+static K_MUTEX_DEFINE(g_transport_io_mutex);
+static k_tid_t g_transport_lock_owner;
+static int64_t g_transport_lock_acquired_ms;
+
+static const char *erpc_wifi_transport_thread_name(k_tid_t tid)
+{
+	const char *name = k_thread_name_get(tid);
+
+	return (name != NULL) ? name : "unnamed";
+}
+
+void erpc_wifi_transport_lock(void)
+{
+	int64_t wait_start = k_uptime_get();
+	k_tid_t self = k_current_get();
+
+	LOG_DBG("transport lock attempt: thread=%s tid=%p",
+		erpc_wifi_transport_thread_name(self), self);
+	k_mutex_lock(&g_transport_io_mutex, K_FOREVER);
+	g_transport_lock_owner = self;
+	g_transport_lock_acquired_ms = k_uptime_get();
+	LOG_DBG("transport lock acquired: thread=%s tid=%p wait_ms=%lld",
+		erpc_wifi_transport_thread_name(self), self,
+		(long long)(g_transport_lock_acquired_ms - wait_start));
+}
+
+void erpc_wifi_transport_unlock(void)
+{
+	k_tid_t self = k_current_get();
+	int64_t now = k_uptime_get();
+
+	LOG_DBG("transport lock release: thread=%s tid=%p owner=%p hold_ms=%lld",
+		erpc_wifi_transport_thread_name(self), self, g_transport_lock_owner,
+		(long long)(now - g_transport_lock_acquired_ms));
+	g_transport_lock_owner = NULL;
+	g_transport_lock_acquired_ms = 0;
+	k_mutex_unlock(&g_transport_io_mutex);
+}
 
 erpc_transport_t erpc_wifi_transport_init(void)
 {
@@ -43,12 +82,23 @@ erpc_transport_t erpc_wifi_transport_init(void)
 		return NULL;
 	} 
 
-	return erpc_transport_zephyr_spi_master_init((void *)&cfg->bus, (void *)&cfg->n_int);
+	erpc_transport_t transport =
+		erpc_transport_zephyr_spi_master_init((void *)&cfg->bus, (void *)&cfg->n_int);
+	g_active_transport = transport;
+	return transport;
+}
+
+erpc_transport_t erpc_wifi_transport_get(void)
+{
+	return g_active_transport;
 }
 
 void erpc_wifi_transport_deinit(erpc_transport_t transport)
 {
 	erpc_transport_zephyr_spi_master_deinit(transport);
+	if (g_active_transport == transport) {
+		g_active_transport = NULL;
+	}
 }
 int erpc_wifi_transport_slave_ready(void)
 {
