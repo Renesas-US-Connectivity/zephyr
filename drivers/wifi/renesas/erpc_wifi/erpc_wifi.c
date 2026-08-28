@@ -1279,7 +1279,7 @@ void erpc_wifi_ps_cancel_sleep_work(void)
 
 static void erpc_wifi_ps_set_state_internal(bool enabled, const char *source)
 {
-	LOG_INF("PS TRACE: erpc_wifi_ps_set_state_internal(source=%s) requested enabled=%d current_enabled=%d allow_sleep_sent=%d socket_connect_pending=%d",
+	LOG_DBG("PS TRACE: erpc_wifi_ps_set_state_internal(source=%s) requested enabled=%d current_enabled=%d allow_sleep_sent=%d socket_connect_pending=%d",
 		source ? source : "unknown", enabled, g_ps.enabled, g_ps.allow_sleep_sent,
 		g_ps.socket_connect_pending);
 
@@ -1369,7 +1369,7 @@ void erpc_wifi_ps_notify_socket_connect_start(void)
 	 * Caller re-invokes this after wake confirmation when needed.
 	 */
 	if (!erpc_wifi_transport_slave_ready()) {
-		LOG_INF("PS TRACE: connect-start deferred remote constraint add until SRDY=1");
+		LOG_DBG("PS TRACE: connect-start deferred remote constraint add until SRDY=1");
 		erpc_wifi_socket_tx_block_set(false, 0U);
 		return;
 	}
@@ -1539,7 +1539,7 @@ static bool erpc_wifi_ps_should_wake_before_disable(void)
 	bool enabled = g_ps.enabled;
 	k_mutex_unlock(&g_ps_mutex);
 	if (!enabled) {
-		LOG_INF("PS TRACE: disable requested while PS already disabled, skip wake pulse");
+		LOG_DBG("PS TRACE: disable requested while PS already disabled, skip wake pulse");
 		return false;
 	}
 
@@ -1554,7 +1554,7 @@ static bool erpc_wifi_ps_should_wake_before_disable(void)
 	 *
 	 * The wake sequence (GPIO pulse + 500ms stabilization + SRDY re-verify)
 	 * costs ~500ms but eliminates the race condition completely. */
-	LOG_INF("PS TRACE: PS enabled, forcing wake sequence before disable");
+	LOG_DBG("PS TRACE: PS enabled, forcing wake sequence before disable");
 	return true;
 }
 
@@ -1572,14 +1572,14 @@ static bool erpc_wifi_ps_wait_until_awake(uint32_t timeout_ms, bool force_first_
 	 * even if SRDY is already high. The RA6W1 may go back to sleep at any
 	 * moment once allow_sleep was sent; pulsing resets its internal timer. */
 	if (force_first_pulse) {
-		LOG_INF("PS TRACE: forced initial wake pulse before awake check");
+		LOG_DBG("PS TRACE: forced initial wake pulse before awake check");
 		erpc_wifi_gpio_trigger_wakeup();
 		last_pulse = k_uptime_get();
 	}
 
 	while ((k_uptime_get() - start) < (int64_t)timeout_ms) {
 		if (erpc_wifi_transport_slave_ready()) {
-			LOG_INF("PS TRACE: module awake via slave-ready, waiting 500ms for stabilization");
+			LOG_DBG("PS TRACE: module awake via slave-ready, waiting 500ms for stabilization");
 			
 			int stable = 0;
 			for (int i = 0; i < 3; i++) {
