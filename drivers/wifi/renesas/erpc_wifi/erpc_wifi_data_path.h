@@ -11,7 +11,7 @@
  * ra6fw_data_path.h. DP requests are queued to a dedicated host worker that
  * owns each synchronous transport request-response exchange.
  *
- * Build gate: CONFIG_DATA_PATH (default n).
+ * Build gate: CONFIG_ERPC_DATA_PATH (default n).
  */
 
 #ifndef ZEPHYR_DRIVERS_WIFI_RENESAS_ERPC_WIFI_DATA_PATH_H_

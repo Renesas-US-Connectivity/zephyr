@@ -26,9 +26,9 @@ void erpc_transport_register_srdy_cb(erpc_transport_srdy_cb_t cb);
 void erpc_wifi_transport_lock(void);
 void erpc_wifi_transport_unlock(void);
 
-#if defined(CONFIG_DATA_PATH)
+#if defined(CONFIG_ERPC_DATA_PATH)
 /* Data-path transfer helpers are implemented in eRPC Zephyr SPI transport. */
-#endif /* CONFIG_DATA_PATH */
+#endif /* CONFIG_ERPC_DATA_PATH */
 
 #ifdef __cplusplus
 }

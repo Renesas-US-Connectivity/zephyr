@@ -11,7 +11,7 @@
 #include "erpc_wifi_transport.h"
 #include "erpc_wifi_cmd.h"
 #include "erpc_wifi_cmd_process_handlers.h"
-#if defined(CONFIG_DATA_PATH)
+#if defined(CONFIG_ERPC_DATA_PATH)
 #include "erpc_wifi_data_path.h"
 #endif
 /* PMGR DPM job ids used by RA6W1 socket shim */
@@ -1954,7 +1954,7 @@ static ssize_t erpc_wifi_socket_send_core(struct erpc_wifi_socket *sock, const v
 		if (dest_addr) {
 			erpc_wifi_msg_sendto_t st_msg = { .fd = sock->fd, .buff = (uint8_t *)buf, .buff_size = len,
 											  .flags = ra_flags, .addr_erpc_wifi = &addr_erpc_wifi };
-#if defined(CONFIG_DATA_PATH)
+#if defined(CONFIG_ERPC_DATA_PATH)
 			ret = erpc_wifi_dp_sendto(st_msg.fd, st_msg.buff, st_msg.buff_size,
 						 st_msg.flags, st_msg.addr_erpc_wifi);
 #else
@@ -1964,7 +1964,7 @@ static ssize_t erpc_wifi_socket_send_core(struct erpc_wifi_socket *sock, const v
 		} else {
 			erpc_wifi_msg_send_t s_msg = { .fd = sock->fd, .buff = (uint8_t *)buf, .buff_size = len,
 										   .flags = ra_flags };
-#if defined(CONFIG_DATA_PATH)
+#if defined(CONFIG_ERPC_DATA_PATH)
 			ret = erpc_wifi_dp_send(s_msg.fd, s_msg.buff, s_msg.buff_size, s_msg.flags);
 #else
 			ret = erpc_wifi_send_cmd(ERPC_WIFI_SEND_CMD, &s_msg, sizeof(s_msg), -1);
@@ -2357,7 +2357,7 @@ static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, i
 			erpc_wifi_msg_recvfrom_t rf_msg = { .fd = sock->fd, .buff = buf, .buff_size = max_len,
 											   .flags = ra_flags, .src_addr = &addr_erpc_wifi,
 											   .src_addrlen = &addrlen_erpc };
-#if defined(CONFIG_DATA_PATH)
+#if defined(CONFIG_ERPC_DATA_PATH)
 			ret = erpc_wifi_dp_recvfrom(rf_msg.fd, rf_msg.buff, rf_msg.buff_size,
 						   rf_msg.flags, rf_msg.src_addr, rf_msg.src_addrlen);
 #else
@@ -2393,7 +2393,7 @@ static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, i
 			}
 			erpc_wifi_msg_recv_t r_msg = { .fd = sock->fd, .buff = buf, .buff_size = max_len,
 									  .flags = ra_flags };
-#if defined(CONFIG_DATA_PATH)
+#if defined(CONFIG_ERPC_DATA_PATH)
 			ret = erpc_wifi_dp_recv(r_msg.fd, r_msg.buff, r_msg.buff_size, r_msg.flags);
 #else
 			ret = erpc_wifi_send_cmd(ERPC_WIFI_RECV_CMD, &r_msg, sizeof(r_msg), -1);

@@ -9,7 +9,7 @@
  * (build frame -> send -> receive -> parse), bypassing the eRPC codec for
  * the hot send/recv socket plane.
  *
- * Build gate: CONFIG_DATA_PATH.
+ * Build gate: CONFIG_ERPC_DATA_PATH.
  */
 
 #include <errno.h>
@@ -75,8 +75,6 @@ static void erpc_wifi_dp_worker_main(void *arg1, void *arg2, void *arg3)
 		}
 
 		op_start = k_uptime_get();
-		LOG_INF("DP worker start: type=%d thread=%s",
-			req->type, k_thread_name_get(k_current_get()));
 		erpc_wifi_transport_lock();
 		switch (req->type) {
 		case DP_REQ_SEND:
@@ -96,9 +94,6 @@ static void erpc_wifi_dp_worker_main(void *arg1, void *arg2, void *arg3)
 			break;
 		}
 		erpc_wifi_transport_unlock();
-		LOG_INF("DP worker done: type=%d ret=%d elapsed_ms=%lld",
-			req->type, req->ret,
-			(long long)(k_uptime_get() - op_start));
 
 		k_sem_give(&req->done);
 	}
@@ -138,9 +133,6 @@ static int dp_submit_req(struct dp_req *req)
 
 	k_sem_init(&req->done, 0, 1);
 	req->ret = -EIO;
-	LOG_INF("DP submit: type=%d trace=%d caller=%s",
-		req->type, (int)atomic_inc(&g_dp_trace_seq),
-		k_thread_name_get(k_current_get()));
 
 	if (k_msgq_put(&g_dp_req_msgq, &req, K_MSEC(1000)) != 0) {
 		LOG_ERR("dp: worker queue full");

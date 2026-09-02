@@ -6,7 +6,7 @@
 #include <zephyr/kernel.h>
 #include "zephyr/net/socket.h"
 
-#if defined(CONFIG_DATA_PATH)
+#if defined(CONFIG_ERPC_DATA_PATH)
 #include "erpc_wifi_data_path.h"
 #endif
 
@@ -168,7 +168,7 @@ int erpc_wifi_cmd_socket_handlers_init(void)
 	erpc_wifi_register_cmd_handler(EPRC_WIFI_GET_SOCKET_EVT_CMD, erpc_wifi_socket_event_msg_process);
 	erpc_wifi_register_cmd_handler(ERPC_WIFI_WAIT_RA_AWAKE_CMD, erpc_wifi_wait_ra_awake_msg_process);
 
-#if defined(CONFIG_DATA_PATH)
+#if defined(CONFIG_ERPC_DATA_PATH)
 	erpc_wifi_dp_handlers_init();
 #endif
 

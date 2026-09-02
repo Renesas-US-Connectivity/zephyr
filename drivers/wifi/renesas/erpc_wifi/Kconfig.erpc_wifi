@@ -83,7 +83,7 @@ config WIFI_ERPC_WAKE_TIMEOUT_MS
 	help
 	  Timeout in milliseconds for the host-to-module DPM wake handshake.
 
-config DATA_PATH
+config ERPC_DATA_PATH
 	bool "Bypass eRPC codec for the send/recv hot data plane"
 	depends on ERPC_TRANSPORT_SPI
 	default n
@@ -91,7 +91,8 @@ config DATA_PATH
 	  Route socket send/recv/sendto/recvfrom through a lightweight packed
 	  binary data-path frame (data_path_msg_t) carried as the body of the
 	  eRPC SPI transport frame, skipping the per-call eRPC codec. Requires a
-	  matching server build with CONFIG_DATA_PATH enabled. When disabled the
-	  driver uses the standard eRPC path with zero behavioural change.
+	  matching RA6W1 server build with its own CONFIG_DATA_PATH define set to
+	  1. When disabled the driver uses the standard eRPC path with zero
+	  behavioural change.
 
 endif # WIFI_ERPC_WIFI

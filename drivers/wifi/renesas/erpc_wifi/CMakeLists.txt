@@ -21,7 +21,7 @@ if(CONFIG_WIFI_ERPC_WIFI)
   zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_UART erpc_wifi_transport_uart.c)
   zephyr_library_sources_ifdef(CONFIG_ERPC_TRANSPORT_SPI erpc_wifi_transport_spi.c)
 
-	zephyr_library_sources_ifdef(CONFIG_DATA_PATH erpc_wifi_data_path.c)
+	zephyr_library_sources_ifdef(CONFIG_ERPC_DATA_PATH erpc_wifi_data_path.c)
 
   zephyr_include_directories(
 	.
