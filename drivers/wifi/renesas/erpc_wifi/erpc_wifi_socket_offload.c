@@ -557,12 +557,17 @@ bool erpc_wifi_has_active_tcp_traffic(void)
 	int64_t now = k_uptime_get();
 	for (int i = 0; i < ERPC_WIFI_MAX_SOCKETS; i++) {
 		if (sockets[i].in_use && sockets[i].type == SOCK_STREAM) {
-			/* Only non-DPM sockets (like HTTPS) hold sleep while waiting or after TX */
+			/* For non-DPM sockets (like HTTPS), hold sleep while waiting or for 15s after TX */
 			if (!sockets[i].tcp_dpm_filter_set) {
 				if (sockets[i].waiting && !erpc_wifi_ps_is_module_asleep()) {
 					return true;
 				}
 				if (sockets[i].last_tx_ms > 0 && (now - sockets[i].last_tx_ms) < 15000) {
+					return true;
+				}
+			} else {
+				/* For DPM sockets (MQTT), hold sleep for 3s after TX to receive immediate PUBACKs */
+				if (sockets[i].last_tx_ms > 0 && (now - sockets[i].last_tx_ms) < 3000) {
 					return true;
 				}
 			}
@@ -2057,7 +2062,9 @@ static ssize_t erpc_wifi_socket_sendto(void *obj, const void *buf, size_t len, i
 	if (sock->type == SOCK_STREAM && ret > 0) {
 		k_spinlock_key_t tx_key = k_spin_lock(&sock->state_lock);
 		sock->last_tx_ms = k_uptime_get();
-		sock->triggered_events &= ~SOCKET_EVENT_RX;
+		if (!sock->tcp_dpm_filter_set) {
+			sock->triggered_events &= ~SOCKET_EVENT_RX;
+		}
 		k_spin_unlock(&sock->state_lock, tx_key);
 	}
 
@@ -2113,7 +2120,9 @@ ssize_t erpc_wifi_socket_sendmsg(void *obj, const struct msghdr *msg, int flags)
 		if (sock->type == SOCK_STREAM && len > 0) {
 			k_spinlock_key_t tx_key = k_spin_lock(&sock->state_lock);
 			sock->last_tx_ms = k_uptime_get();
-			sock->triggered_events &= ~SOCKET_EVENT_RX;
+			if (!sock->tcp_dpm_filter_set) {
+				sock->triggered_events &= ~SOCKET_EVENT_RX;
+			}
 			k_spin_unlock(&sock->state_lock, tx_key);
 		}
 
