@@ -559,21 +559,33 @@ bool erpc_wifi_has_active_tcp_traffic(void)
 {
 	int64_t now = k_uptime_get();
 	for (int i = 0; i < ERPC_WIFI_MAX_SOCKETS; i++) {
-		if (sockets[i].in_use && sockets[i].type == SOCK_STREAM) {
-			/* While module is awake and socket is actively waiting for data, keep awake to finish handshake/transactions */
-			if (sockets[i].waiting && !erpc_wifi_ps_is_module_asleep()) {
+		if (!sockets[i].in_use || sockets[i].type != SOCK_STREAM) {
+			continue;
+		}
+
+		/*
+		 * A socket that is only blocked in a normal recv()/poll() wait is not
+		 * active traffic. Treating every waiting TCP socket as "work" keeps the
+		 * module awake indefinitely after MQTT/TLS idle waits and prevents DPM
+		 * from re-entering sleep.
+		 *
+		 * Only real connect activity and recent TX activity should keep the module
+		 * awake. RX/ERR/CLOSE readiness is handled by the socket event path and
+		 * should not be used to extend the DPM window indefinitely.
+		 */
+		if (sockets[i].connect_pending) {
+			return true;
+		}
+
+		/* Non-DPM sockets (HTTPS) keep awake for 15s after TX. */
+		if (!sockets[i].tcp_dpm_filter_set) {
+			if (sockets[i].last_tx_ms > 0 && (now - sockets[i].last_tx_ms) < 15000) {
 				return true;
 			}
-			/* Non-DPM sockets (HTTPS) keep awake for 15s after TX */
-			if (!sockets[i].tcp_dpm_filter_set) {
-				if (sockets[i].last_tx_ms > 0 && (now - sockets[i].last_tx_ms) < 15000) {
-					return true;
-				}
-			} else {
-				/* DPM sockets (MQTT) keep awake for 5s after TX to receive immediate PUBACKs */
-				if (sockets[i].last_tx_ms > 0 && (now - sockets[i].last_tx_ms) < 5000) {
-					return true;
-				}
+		} else {
+			/* DPM sockets (MQTT) keep awake for 5s after TX to receive immediate PUBACKs. */
+			if (sockets[i].last_tx_ms > 0 && (now - sockets[i].last_tx_ms) < 5000) {
+				return true;
 			}
 		}
 	}
