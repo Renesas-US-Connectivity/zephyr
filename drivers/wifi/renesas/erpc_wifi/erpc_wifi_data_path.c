@@ -53,7 +53,6 @@ K_THREAD_STACK_DEFINE(g_dp_worker_stack, 3072);
 static struct k_thread g_dp_worker_thread;
 static k_tid_t g_dp_worker_tid;
 static atomic_t g_dp_worker_started;
-static atomic_t g_dp_trace_seq;
 
 static int dp_send_impl(erpc_wifi_msg_send_t *msg);
 static int dp_recv_impl(erpc_wifi_msg_recv_t *msg);
@@ -229,7 +228,12 @@ static int dp_send_impl(erpc_wifi_msg_send_t *msg)
 		return rc;
 	}
 
-	return ((data_path_msg_t *)resp)->u.lwip_send_ret.ret;
+	/* resp only holds ctrl + the return payload, so copy the field out rather
+	 * than casting it to the full-size message type. */
+	int32_t send_ret;
+
+	memcpy(&send_ret, resp + DP_CTRL_SIZE, sizeof(send_ret));
+	return send_ret;
 }
 
 static int dp_sendto_impl(erpc_wifi_msg_sendto_t *msg)
@@ -276,7 +280,10 @@ static int dp_sendto_impl(erpc_wifi_msg_sendto_t *msg)
 		return rc;
 	}
 
-	return ((data_path_msg_t *)resp)->u.lwip_sendto_ret.ret;
+	int32_t sendto_ret;
+
+	memcpy(&sendto_ret, resp + DP_CTRL_SIZE, sizeof(sendto_ret));
+	return sendto_ret;
 }
 
 static int dp_recv_impl(erpc_wifi_msg_recv_t *msg)

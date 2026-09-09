@@ -1924,13 +1924,6 @@ static void erpc_wifi_sync_recv_job_for_socket_locked(struct erpc_wifi_socket *s
 	}
 }
 
-static void erpc_wifi_sync_recv_job_for_socket(struct erpc_wifi_socket *sock, const char *path)
-{
-	k_mutex_lock(&g_active_tcp_job_mutex, K_FOREVER);
-	erpc_wifi_sync_recv_job_for_socket_locked(sock, path);
-	k_mutex_unlock(&g_active_tcp_job_mutex);
-}
-
 static ssize_t erpc_wifi_socket_send_core(struct erpc_wifi_socket *sock, const void *buf, size_t len, int flags,
 										   const struct sockaddr *dest_addr, socklen_t addrlen, bool *ram_held)
 {

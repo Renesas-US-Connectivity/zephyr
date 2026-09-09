@@ -186,8 +186,10 @@ struct pmgr_timer_evt {
 
 K_MSGQ_DEFINE(pmgr_timer_msgq, sizeof(struct pmgr_timer_evt), 8, 4);
 
+#ifdef CONFIG_ERPC_TRANSPORT_UART
 static void pmgr_timer_work_handler(struct k_work *work);
 static K_WORK_DEFINE(pmgr_timer_work, pmgr_timer_work_handler);
+#endif
 static int erpc_wifi_init_erpc(struct erpc_wifi_data *data);
 static void erpc_wifi_deinit_erpc(struct erpc_wifi_data *data);
 
@@ -198,8 +200,6 @@ __weak void erpc_wifi_pmgr_timer_fired_hook(uint32_t job_id, const char *timer_n
 
 int erpc_wifi_otp_mac_read(uint8_t mac[WIFI_MAC_ADDR_LEN])
 {
-	WIFIReturnCode_t ret;
-
 	if (mac == NULL) {
 		return -EINVAL;
 	}
@@ -210,8 +210,6 @@ int erpc_wifi_otp_mac_read(uint8_t mac[WIFI_MAC_ADDR_LEN])
 
 int erpc_wifi_otp_mac_write(const uint8_t mac[WIFI_MAC_ADDR_LEN])
 {
-	WIFIReturnCode_t ret;
-
 	if (mac == NULL) {
 		return -EINVAL;
 	}
@@ -222,8 +220,6 @@ int erpc_wifi_otp_mac_write(const uint8_t mac[WIFI_MAC_ADDR_LEN])
 
 int erpc_wifi_get_mac(uint8_t mac[WIFI_MAC_ADDR_LEN])
 {
-	WIFIReturnCode_t ret;
-
 	if (mac == NULL) {
 		return -EINVAL;
 	}
@@ -333,10 +329,9 @@ static void n_int_iface_active_cb(const struct device *dev, struct gpio_callback
 
  static int erpc_wifi_reset(void)
  {
-	erpc_wifi_socket_invalidate_active_job_cache();
-	k_timeout_t timeout = K_NO_WAIT;
- 	int err = 0;
- 
+	int err = 0;
+
+	erpc_wifi_socket_invalidate_active_job_cache(); 
  	err = erpc_wifi_acquire_reset_pin();
  	if (err) {
  		return err;
@@ -898,8 +893,7 @@ static void erpc_wifi_mgmt_disconnect_work(struct k_work *work)
 static void erpc_wifi_iface_disable(const struct device *dev)
 {
  	struct erpc_wifi_data *data = dev->data;
- 	WIFIReturnCode_t ret;
- 
+
  	LOG_INF("erpc_wifi_iface_disable");
  
  	/* Queue disconnect first */
@@ -1120,7 +1114,9 @@ static bool erpc_wifi_ps_ip_ready(void)
 {
 	struct net_if *iface = erpc_wifi_driver_data.net_iface;
 	bool ipv4_ready = false;
+#if defined(CONFIG_NET_IPV6)
 	bool ipv6_ready = false;
+#endif
 
 #if defined(CONFIG_NET_IPV4)
 	ipv4_ready = erpc_wifi_driver_data.ipv4_assigned;
@@ -1876,9 +1872,9 @@ static int erpc_wifi_mgmt_get_power_save_config(const struct device *dev, struct
   	return 0;
 }
   
-static int erpc_wifi_mgmt_set_power_save(struct net_if *iface, struct wifi_ps_params *params)
+static int erpc_wifi_mgmt_set_power_save(const struct device *dev, struct wifi_ps_params *params)
 {
-	ARG_UNUSED(iface);
+	ARG_UNUSED(dev);
 	struct erpc_wifi_data *data = &erpc_wifi_driver_data;
 	if (params == NULL) {
 		return -EINVAL;
@@ -2460,7 +2456,6 @@ static void erpc_wifi_apply_dhcp_lease(struct net_if *iface, struct WIFIIPConfig
 #endif
 	}
 
-ensure_up:
 	// Ensure interface is up
 	net_if_up(iface);
 	if (config->xIPAddress.xType == eWiFiIPAddressTypeV4) {
