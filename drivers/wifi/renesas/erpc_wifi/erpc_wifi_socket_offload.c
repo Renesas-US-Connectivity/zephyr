@@ -147,18 +147,16 @@ static int erpc_wifi_ensure_awake_tx(uint32_t job_id, bool *ram_held)
 	erpc_wifi_ps_cancel_sleep_work();
 
 	if (atomic_get(&g_erpc_tx_blocked) == 0) {
-		if (!erpc_wifi_ps_is_enabled() || erpc_wifi_transport_slave_ready() == 1) {
+		if (!erpc_wifi_ps_is_enabled() || (erpc_wifi_ps_is_module_awake() && erpc_wifi_transport_slave_ready() == 1)) {
 			if (erpc_wifi_ps_is_enabled()) {
-				if (erpc_wifi_transport_slave_ready() == 1) {
-					int ps_rc = erpc_wifi_ps_hold_awake("tx-awake");
-					if (ps_rc != 0) {
-						/*
-						 * wait_awake_tx() may have reserved WAKING_UP for this
-						 * operation.  Never return with that transition stranded.
-						 */
-						erpc_wifi_ps_wake_failed();
-						return ps_rc;
-					}
+				int ps_rc = erpc_wifi_ps_hold_awake("tx-awake");
+				if (ps_rc != 0) {
+					/*
+					 * wait_awake_tx() may have reserved WAKING_UP for this
+					 * operation.  Never return with that transition stranded.
+					 */
+					erpc_wifi_ps_wake_failed();
+					return ps_rc;
 				}
 				/* Ensure POWER_RAM hold is acquired to protect this socket operation */
 				int hold_rc = pmgr_ram_hold();
@@ -174,7 +172,7 @@ static int erpc_wifi_ensure_awake_tx(uint32_t job_id, bool *ram_held)
 			return 0;
 		}
 
-		LOG_INF("TX wake override (job=%u): tx_blocked=0 but slave-ready=0 while PS enabled",
+		LOG_INF("TX wake override (job=%u): tx_blocked=0 but slave-ready=0 or module asleep while PS enabled",
 			job_id);
 	}
 
