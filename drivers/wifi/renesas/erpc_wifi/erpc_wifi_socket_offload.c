@@ -147,16 +147,18 @@ static int erpc_wifi_ensure_awake_tx(uint32_t job_id, bool *ram_held)
 	erpc_wifi_ps_cancel_sleep_work();
 
 	if (atomic_get(&g_erpc_tx_blocked) == 0) {
-		if (!erpc_wifi_ps_is_enabled() || (erpc_wifi_ps_is_module_awake() && erpc_wifi_transport_slave_ready() == 1)) {
+		if (!erpc_wifi_ps_is_enabled() || erpc_wifi_transport_slave_ready() == 1) {
 			if (erpc_wifi_ps_is_enabled()) {
-				int ps_rc = erpc_wifi_ps_hold_awake("tx-awake");
-				if (ps_rc != 0) {
-					/*
-					 * wait_awake_tx() may have reserved WAKING_UP for this
-					 * operation.  Never return with that transition stranded.
-					 */
-					erpc_wifi_ps_wake_failed();
-					return ps_rc;
+				if (erpc_wifi_transport_slave_ready() == 1) {
+					int ps_rc = erpc_wifi_ps_hold_awake("tx-awake");
+					if (ps_rc != 0) {
+						/*
+						 * wait_awake_tx() may have reserved WAKING_UP for this
+						 * operation.  Never return with that transition stranded.
+						 */
+						erpc_wifi_ps_wake_failed();
+						return ps_rc;
+					}
 				}
 				/* Ensure POWER_RAM hold is acquired to protect this socket operation */
 				int hold_rc = pmgr_ram_hold();
@@ -172,7 +174,7 @@ static int erpc_wifi_ensure_awake_tx(uint32_t job_id, bool *ram_held)
 			return 0;
 		}
 
-		LOG_INF("TX wake override (job=%u): tx_blocked=0 but slave-ready=0 or module asleep while PS enabled",
+		LOG_INF("TX wake override (job=%u): tx_blocked=0 but slave-ready=0 while PS enabled",
 			job_id);
 	}
 
@@ -2418,6 +2420,11 @@ static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, i
 		 * RA uses -1/EAGAIN-like returns to mean
 		 * "socket currently has no data".
 		 *
+		 * -ETIMEDOUT here is an eRPC/SPI transport hiccup (e.g. racing a
+		 * concurrent host TX wake for SRDY), NOT a peer-initiated close.
+		 * Treat it the same as no-data so a single transient transport
+		 * timeout cannot tear down an otherwise healthy MQTT/TLS session.
+		 *
 		 * That is NOT network activity and must not keep
 		 * pushing the DPM idle timer into the future.
 		 */
@@ -2425,7 +2432,8 @@ static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, i
 			(ret == -EAGAIN) ||
 			(ret == -EWOULDBLOCK) ||
 			(ret == -6) ||
-			(ret == -1);
+			(ret == -1) ||
+			(ret == -ETIMEDOUT);
 
 		if (no_data) {
 			/*
@@ -2468,9 +2476,11 @@ static ssize_t erpc_wifi_socket_recvfrom(void *obj, void *buf, size_t max_len, i
 		/*
 		 * RA6W1 non-blocking recv may return -1 for "no data yet" instead of
 		 * -EAGAIN/-EWOULDBLOCK. Treat it as transient so higher layers can
-		 * continue polling during TLS handshake.
+		 * continue polling during TLS handshake. A transport-level -ETIMEDOUT
+		 * is likewise transient (see no_data above) and must keep retrying
+		 * rather than fatally erroring the socket out from under mqtt_client.
 		 */
-		if (ret >= 0 || (ret != -EAGAIN && ret != -EWOULDBLOCK && ret != -6 && ret != -1)) {
+		if (ret >= 0 || (ret != -EAGAIN && ret != -EWOULDBLOCK && ret != -6 && ret != -1 && ret != -ETIMEDOUT)) {
 			if (ret < 0) {
 				LOG_ERR("ra6w1_recv failed: %d", ret);
 				errno = (ret == -1) ? EIO : (int)-ret;
