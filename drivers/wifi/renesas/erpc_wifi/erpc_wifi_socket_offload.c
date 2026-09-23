@@ -237,7 +237,7 @@ static int erpc_wifi_ensure_awake_tx(uint32_t job_id, bool *ram_held)
 			 */
 			atomic_set(&g_host_wake_inflight, 0);
 			erpc_wifi_ps_wake_failed();
-			LOG_ERR("TX wake exhausted after %u attempts (%lld ms): socket/MQTT TX will fail because RA6W1 remained unavailable during DPM sleep/transition",
+			LOG_ERR("TX wake exhausted after %u attempts (%lld ms): socket/MQTT TX will fail; RA6W1 did not assert SRDY (host PS state may be stale, NCP DPM transition or NCP handler stall)",
 				attempt, (long long)(k_uptime_get() - total_start));
 			return -EAGAIN;
 		}

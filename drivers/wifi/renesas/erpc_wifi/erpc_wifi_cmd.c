@@ -9,6 +9,7 @@ LOG_MODULE_REGISTER(erpc_wifi_cmd, CONFIG_WIFI_LOG_LEVEL);
 
 #define ERPC_WIFI_MSG_MAX 64
 #define MSG_TASK_STACK_SIZE 3200
+#define ERPC_WIFI_CMD_MAX_SPI_PHASES 4
 #define ERPC_WIFI_CMD_TIMEOUT_MARGIN_MS 1000
 
 K_THREAD_STACK_DEFINE(msg_task_stack, MSG_TASK_STACK_SIZE);
@@ -161,8 +162,10 @@ int erpc_wifi_send_cmd(erpc_wifi_cmd_t cmd, void *data, size_t size, int tout)
 	}
 
 	if (effective_tout > 0 &&
-	    effective_tout <= CONFIG_ERPC_SPI_READY_TIMEOUT_MS) {
-		effective_tout = CONFIG_ERPC_SPI_READY_TIMEOUT_MS +
+	    effective_tout <= (CONFIG_ERPC_SPI_READY_TIMEOUT_MS *
+			       ERPC_WIFI_CMD_MAX_SPI_PHASES)) {
+		effective_tout = (CONFIG_ERPC_SPI_READY_TIMEOUT_MS *
+			  ERPC_WIFI_CMD_MAX_SPI_PHASES) +
 			ERPC_WIFI_CMD_TIMEOUT_MARGIN_MS;
 		LOG_DBG("CMD timeout raised: cmd=%d requested=%d effective=%d transport=%d",
 			cmd, tout, effective_tout, CONFIG_ERPC_SPI_READY_TIMEOUT_MS);
