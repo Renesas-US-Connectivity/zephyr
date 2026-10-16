@@ -140,7 +140,7 @@ manifest:
         - tools
     - name: renesas-erpc-wifi
       url: https://github.com/Renesas-US-Connectivity/renesas-erpc-wifi.git
-      revision: 934600cec7edbb4cf28a8c4acd4625ecfbfe9707
+      revision: 0408f36f57ff3a854814ce11ebfa8f2e27040461
       path: modules/erpc_wifi
       import: true
     - name: fatfs
